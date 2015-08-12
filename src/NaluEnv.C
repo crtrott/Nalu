@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <Kokkos_Core.hpp>
 
 namespace sierra{
 namespace nalu{
@@ -121,6 +122,8 @@ NaluEnv::close_log_file_stream()
 NaluEnv::~NaluEnv()
 {
   close_log_file_stream();
+  
+  Kokkos::finalize();
   // shut down MPI
   MPI_Finalize();
 }

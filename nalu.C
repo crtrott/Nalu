@@ -29,6 +29,7 @@
 #include <fstream>
 #include <iomanip>
 #include <stdexcept>
+#include <Kokkos_Core.hpp>
 
 static std::string human_bytes_double(double bytes)
 {
@@ -60,6 +61,8 @@ int main( int argc, char ** argv )
   if ( MPI_SUCCESS != MPI_Init( &argc , &argv ) ) {
     throw std::runtime_error("MPI_Init failed");
   }
+
+  Kokkos::initialize(argc,argv);  
 
   // NaluEnv singleton
   sierra::nalu::NaluEnv &naluEnv = sierra::nalu::NaluEnv::self();
