@@ -996,6 +996,7 @@ TpetraLinearSystem::zeroSystem()
 }
 
 
+
 void
 TpetraLinearSystem::sumInto(
   const std::vector<stk::mesh::Entity> & entities,
@@ -1004,6 +1005,15 @@ TpetraLinearSystem::sumInto(
   const char *trace_tag
   )
 {
+  static int check = 0;
+  int kk = 0;
+  int sum = 0;
+  while(trace_tag[kk] != 0)
+    sum+=trace_tag[kk++];
+  if(check!=sum) {
+    printf("SUMINTO: %s\n",trace_tag);
+    check = sum;
+  }
   stk::mesh::BulkData & bulkData = realm_.bulk_data();
 
   const size_t n_obj = entities.size();
@@ -1015,8 +1025,9 @@ TpetraLinearSystem::sumInto(
   static std::vector<LocalOrdinal> localIds;
   localIds.resize(numRows);
   //KOKKOS: Loop parallel
-  Kokkos::parallel_for("Nalu::TpetraLinearSystem::sumIntoA",
-    Kokkos::RangePolicy<Kokkos::Serial>(0,n_obj), [&] (const size_t& i) {
+  //Kokkos::parallel_for("Nalu::TpetraLinearSystem::sumIntoA",
+  //  Kokkos::RangePolicy<Kokkos::Serial>(0,n_obj), [&] (const size_t& i) {
+  for(size_t i = 0; i < n_obj; i++) {
     const stk::mesh::Entity entity = entities[i];
     const stk::mesh::EntityId entityId = bulkData.identifier(entity);
     (void)entityId;
@@ -1026,12 +1037,13 @@ TpetraLinearSystem::sumInto(
       size_t lid = i*numDof_ + d;
       localIds[lid] = localOffset + d;
     }
-  });
+  }
   static std::vector<double> vals;
   vals.resize(numRows);
   //KOKKOS: Loop noparallel Matrix Vector sumIntoLocalValues
-  Kokkos::parallel_for("Nalu::TpetraLinearSystem::sumIntoB",
-    Kokkos::RangePolicy<Kokkos::Serial>(0,numRows), [&] (const size_t& r) {
+  //Kokkos::parallel_for("Nalu::TpetraLinearSystem::sumIntoB",
+  //  Kokkos::RangePolicy<Kokkos::Serial>(0,numRows), [&] (const size_t& r) {
+  for(size_t r = 0; r < numRows; r++) {
     const LocalOrdinal localId = localIds[r];
 
     //KOKKOS: nested Loop parallel
@@ -1047,7 +1059,7 @@ TpetraLinearSystem::sumInto(
       globallyOwnedMatrix_->sumIntoLocalValues(actualLocalId, localIds, vals);
       globallyOwnedRhs_->sumIntoLocalValue(actualLocalId, rhs[r]);
     }
-  });
+  }
 
 }
 

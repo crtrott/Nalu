@@ -83,9 +83,9 @@ AssembleNodeSolverAlgorithm::execute()
 
   stk::mesh::BucketVector const& node_buckets =
     realm_.get_buckets( stk::topology::NODE_RANK, s_locally_owned_union );
-  for ( stk::mesh::BucketVector::const_iterator ib = node_buckets.begin();
-        ib != node_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
+  Kokkos::parallel_for("Nalu::AssembleNodeSolver",
+    Kokkos::RangePolicy<Kokkos::Serial>(0, node_buckets.size()), [&] (const int& ib) {
+    const stk::mesh::Bucket & b = *node_buckets[ib];
     const stk::mesh::Bucket::size_type length   = b.size();
 
     for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
@@ -106,7 +106,7 @@ AssembleNodeSolverAlgorithm::execute()
       apply_coeff(connected_nodes, rhs, lhs, __FILE__);
 
     }
-  }
+  });
 }
 
 } // namespace nalu

@@ -138,9 +138,9 @@ AssembleContinuityElemSolverAlgorithm::execute()
 
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
-  for ( stk::mesh::BucketVector::const_iterator ib = elem_buckets.begin();
-        ib != elem_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
+  Kokkos::parallel_for("Nalu::AssembleContinuityElemSolver",
+    Kokkos::RangePolicy<Kokkos::Serial>(0, elem_buckets.size()), [&] (const int& ib) {
+    const stk::mesh::Bucket & b = *elem_buckets[ib];
     const stk::mesh::Bucket::size_type length   = b.size();
 
     // extract master element
@@ -317,7 +317,7 @@ AssembleContinuityElemSolverAlgorithm::execute()
       apply_coeff(connected_nodes, rhs, lhs, __FILE__);
 
     }
-  }
+  });
 }
 
 } // namespace nalu

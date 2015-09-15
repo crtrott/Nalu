@@ -128,9 +128,10 @@ AssembleScalarElemOpenSolverAlgorithm::execute()
 
   stk::mesh::BucketVector const& face_buckets =
     realm_.get_buckets( meta_data.side_rank(), s_locally_owned_union );
-  for ( stk::mesh::BucketVector::const_iterator ib = face_buckets.begin();
-        ib != face_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
+
+  Kokkos::parallel_for("Nalu::AssembleScalarElemOpenSolver",
+    Kokkos::RangePolicy<Kokkos::Serial>(0, face_buckets.size()), [&] (const int& ib) {
+    const stk::mesh::Bucket & b = *face_buckets[ib];
 
     // extract connected element topology
     b.parent_topology(stk::topology::ELEMENT_RANK, parentTopo);
@@ -327,7 +328,7 @@ AssembleScalarElemOpenSolverAlgorithm::execute()
 
       apply_coeff(connected_nodes, rhs, lhs, __FILE__);
     }
-  }
+  });
 }
 
 } // namespace nalu

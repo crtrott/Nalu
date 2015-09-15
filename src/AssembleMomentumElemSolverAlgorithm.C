@@ -180,9 +180,58 @@ AssembleMomentumElemSolverAlgorithm::execute()
 
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
-  for ( stk::mesh::BucketVector::const_iterator ib = elem_buckets.begin();
-        ib != elem_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
+
+  int maxNodesPerElement = 0;
+  int minNodesPerElement = 2000000000;
+  int maxNumScsIp = 0;
+  int minNodesPerEleement = 2000000000;
+
+  Kokkos::parallel_for("Nalu::AssembleMomentumElemSolver::FindMax",
+    Kokkos::RangePolicy<Kokkos::Serial>(0, elem_buckets.size()), [&] (const int& ib) {
+    const stk::mesh::Bucket & b = *elem_buckets[ib];
+
+    const stk::mesh::Bucket::size_type length   = b.size();
+
+    // extract master element
+    MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
+    MasterElement *meSCV = realm_.get_volume_master_element(b.topology());
+
+    // extract master element specifics
+    const int nodesPerElement = meSCS->nodesPerElement_;
+    const int numScsIp = meSCS->numIntPoints_;
+
+    if( nodesPerElement > maxNodesPerElement ) maxNodesPerElement = nodesPerElement;
+    if( numScsIp > maxNumScsIp ) maxNumScsIp = numScsIp;
+  });
+
+  // algorithm related
+  ws_velocityNp1.resize(maxNodesPerElement*nDim);
+  ws_vrtm.resize(maxNodesPerElement*nDim);
+  ws_coordinates.resize(maxNodesPerElement*nDim);
+  ws_dudx.resize(maxNodesPerElement*nDim*nDim);
+  ws_densityNp1.resize(maxNodesPerElement);
+  ws_viscosity.resize(maxNodesPerElement);
+  ws_scs_areav.resize(maxNumScsIp*nDim);
+  ws_dndx.resize(nDim*maxNumScsIp*maxNodesPerElement);
+  ws_deriv.resize(nDim*maxNumScsIp*maxNodesPerElement);
+  ws_det_j.resize(maxNumScsIp);
+  ws_shape_function.resize(maxNumScsIp*maxNodesPerElement);
+
+  // resize some things; matrix related
+  const int lhsSize = maxNodesPerElement*nDim*maxNodesPerElement*nDim;
+  const int rhsSize = maxNodesPerElement*nDim;
+  lhs.resize(lhsSize);
+  rhs.resize(rhsSize);
+  connected_nodes.resize(maxNodesPerElement);
+
+  int max_num_nodes = 0;
+  int min_num_nodes = 2000000000;
+  int max_lenth = 0;
+  int min_length = 2000000000;
+  Kokkos::parallel_for("Nalu::AssembleMomentumElemSolver",
+    Kokkos::RangePolicy<Kokkos::Serial>(0, elem_buckets.size()), [&] (const int& ib) {
+    const stk::mesh::Bucket & b = *elem_buckets[ib];
+
     const stk::mesh::Bucket::size_type length   = b.size();
 
     // extract master element
@@ -194,25 +243,6 @@ AssembleMomentumElemSolverAlgorithm::execute()
     const int numScsIp = meSCS->numIntPoints_;
     const int *lrscv = meSCS->adjacentNodes();
 
-    // resize some things; matrix related
-    const int lhsSize = nodesPerElement*nDim*nodesPerElement*nDim;
-    const int rhsSize = nodesPerElement*nDim;
-    lhs.resize(lhsSize);
-    rhs.resize(rhsSize);
-    connected_nodes.resize(nodesPerElement);
-
-    // algorithm related
-    ws_velocityNp1.resize(nodesPerElement*nDim);
-    ws_vrtm.resize(nodesPerElement*nDim);
-    ws_coordinates.resize(nodesPerElement*nDim);
-    ws_dudx.resize(nodesPerElement*nDim*nDim);
-    ws_densityNp1.resize(nodesPerElement);
-    ws_viscosity.resize(nodesPerElement);
-    ws_scs_areav.resize(numScsIp*nDim);
-    ws_dndx.resize(nDim*numScsIp*nodesPerElement);
-    ws_deriv.resize(nDim*numScsIp*nodesPerElement);
-    ws_det_j.resize(numScsIp);
-    ws_shape_function.resize(numScsIp*nodesPerElement);
 
     // pointer to lhs/rhs
     double *p_lhs = &lhs[0];
@@ -505,7 +535,7 @@ AssembleMomentumElemSolverAlgorithm::execute()
       apply_coeff(connected_nodes, rhs, lhs, __FILE__);
 
     }
-  }
+  });
 }
 
 //--------------------------------------------------------------------------
