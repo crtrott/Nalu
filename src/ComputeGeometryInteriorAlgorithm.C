@@ -63,8 +63,7 @@ ComputeGeometryInteriorAlgorithm::execute()
   // extract field always germane
   ScalarFieldType *dualNodalVolume = meta_data.get_field<ScalarFieldType>(stk::topology::NODE_RANK, "dual_nodal_volume");
   VectorFieldType *coordinates = meta_data.get_field<VectorFieldType>(stk::topology::NODE_RANK, realm_.get_coordinates_name());
-  GenericFieldType *scVolume = meta_data.get_field<GenericFieldType>(stk::topology::ELEMENT_RANK, "sc_volume");
-
+ 
   // setup for buckets; union parts and ask for locally owned
   stk::mesh::Selector s_locally_owned_union = meta_data.locally_owned_part()
     & stk::mesh::selectUnion(partVec_)  
@@ -86,16 +85,14 @@ ComputeGeometryInteriorAlgorithm::execute()
     // extract master element specifics
     const int nodesPerElement = meSCV->nodesPerElement_;
     const int numScvIp = meSCV->numIntPoints_;
+    const int *ipNodeMap = meSCV->ipNodeMap();
 
     // define scratch field
     std::vector<double > ws_coordinates(nodesPerElement*nDim);
-    std::vector<double > ws_scvol(numScvIp);
+    std::vector<double > ws_scv_volume(numScvIp);
 
     const stk::mesh::Bucket::size_type length   = b.size();
     for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
-
-      // pointer to integration point data
-      double * subContVol = stk::mesh::field_data(*scVolume, b, k );
 
       //===============================================
       // gather nodal data; this is how we do it now..
@@ -117,17 +114,16 @@ ComputeGeometryInteriorAlgorithm::execute()
 
       // compute integration point volume
       double scv_error = 0.0;
-      meSCV->determinant(1, &ws_coordinates[0], &ws_scvol[0], &scv_error);
+      meSCV->determinant(1, &ws_coordinates[0], &ws_scv_volume[0], &scv_error);
 
       // assemble dual volume while scattering ip volume
-      for ( int ni = 0; ni < num_nodes; ++ni ) {
-        stk::mesh::Entity node = node_rels[ni];
+      for ( int ip = 0; ip < numScvIp; ++ip ) {
+        // nearest node for this ip
+        const int nn = ipNodeMap[ip];
+        stk::mesh::Entity node = node_rels[nn];
         double * dualcv = stk::mesh::field_data(*dualNodalVolume, node);
-
-        const double scvol = ws_scvol[ni];
-        subContVol[ni] = scvol;
         // augment nodal dual volume
-        *dualcv += scvol;
+        *dualcv += ws_scv_volume[ip];
       }
     }
   }
@@ -154,7 +150,7 @@ ComputeGeometryInteriorAlgorithm::execute()
       // define scratch field
       std::vector<double > ws_coordinates(nodesPerElement*nDim);
       std::vector<double > ws_scs_areav(numScsIp*nDim);
-
+  
       const stk::mesh::Bucket::size_type length   = b.size();
 
       for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {

@@ -33,13 +33,8 @@
 #include <ErrorIndicatorAlgorithmDriver.h>
 #include <ExtrusionMeshDistanceBoundaryAlgorithm.h>
 #include <FieldTypeDef.h>
-#include <GenericPropAlgorithm.h>
-#include <InversePropAlgorithm.h>
-#include <InverseDualVolumePropAlgorithm.h>
-#include <LinearPropAlgorithm.h>
 #include <LinearSystem.h>
 #include <master_element/MasterElement.h>
-#include <MaterialPropertyData.h>
 #include <MaterialPropertys.h>
 #include <NaluParsing.h>
 #include <NonConformalManager.h>
@@ -48,11 +43,9 @@
 #include <AveragingInfo.h>
 #include <PostProcessingInfo.h>
 #include <PostProcessingData.h>
+#include <SolutionNormPostProcessing.h>
 #include <PeriodicManager.h>
 #include <Realms.h>
-#include <ReferencePropertyData.h>
-#include <HDF5TablePropAlgorithm.h>
-#include <TemperaturePropAlgorithm.h>
 #include <TurbulenceAveragingAlgorithm.h>
 #include <SolutionOptions.h>
 #include <TimeIntegrator.h>
@@ -60,13 +53,22 @@
 // overset
 #include <overset/OversetManager.h>
 
-// props
-#include <PropertyEvaluator.h>
-#include <ConstantPropertyEvaluator.h>
-#include <EnthalpyPropertyEvaluator.h>
-#include <IdealGasPropertyEvaluator.h>
-#include <SpecificHeatPropertyEvaluator.h>
-#include <SutherlandsPropertyEvaluator.h>
+// props; algs, evaluators and data
+#include <property_evaluator/GenericPropAlgorithm.h>
+#include <property_evaluator/HDF5TablePropAlgorithm.h>
+#include <property_evaluator/InverseDualVolumePropAlgorithm.h>
+#include <property_evaluator/InversePropAlgorithm.h>
+#include <property_evaluator/TemperaturePropAlgorithm.h>
+#include <property_evaluator/LinearPropAlgorithm.h>
+#include <property_evaluator/ConstantPropertyEvaluator.h>
+#include <property_evaluator/EnthalpyPropertyEvaluator.h>
+#include <property_evaluator/IdealGasPropertyEvaluator.h>
+#include <property_evaluator/PropertyEvaluator.h>
+#include <property_evaluator/ReferencePropertyData.h>
+#include <property_evaluator/SpecificHeatPropertyEvaluator.h>
+#include <property_evaluator/SutherlandsPropertyEvaluator.h>
+#include <property_evaluator/WaterPropertyEvaluator.h>
+#include <property_evaluator/MaterialPropertyData.h>
 
 // tables
 #include <tabular_props/HDF5FilePtr.h>
@@ -165,6 +167,7 @@ Realm::Realm(Realms& realms)
     outputInfo_(new OutputInfo()),
     averagingInfo_(new AveragingInfo()),
     postProcessingInfo_(new PostProcessingInfo()),
+    solutionNormPostProcessing_(new SolutionNormPostProcessing(*this)),
     nodeCount_(0),
     estimateMemoryOnly_(false),
     availableMemoryPerCoreGB_(0),
@@ -260,6 +263,7 @@ Realm::~Realm()
   delete outputInfo_;
   delete averagingInfo_;
   delete postProcessingInfo_;
+  delete solutionNormPostProcessing_;
 
   // delete contact related things
   if ( NULL != contactManager_ )
@@ -582,6 +586,9 @@ Realm::load(const YAML::Node & node)
   // post processing
   postProcessingInfo_->load(node);
 
+  // norms
+  solutionNormPostProcessing_->load(node);
+
   // boundary, init, material and equation systems "load"
   NaluEnv::self().naluOutputP0() << std::endl;
   NaluEnv::self().naluOutputP0() << "Boundary Condition Review: " << std::endl;
@@ -666,6 +673,10 @@ Realm::setup_nodal_fields()
   // loop over all material props targets and register nodal fields
   std::vector<std::string> targetNames = materialPropertys_.targetNames_;
   equationSystems_.register_nodal_fields(targetNames);
+
+  // check for norm nodal fields
+  if ( NULL != solutionNormPostProcessing_ )
+    solutionNormPostProcessing_->setup(targetNames);
 }
 
 //--------------------------------------------------------------------------
@@ -715,7 +726,7 @@ Realm::setup_post_processing_algorithms()
   // get a pointer to the post processing data vector
   std::vector<PostProcessingData* > &ppDataVec = postProcessingInfo_->ppDataVec_;
 
-  // iterate and set=up
+  // iterate and set-up
   std::vector<PostProcessingData *>::const_iterator ii;
   for( ii=ppDataVec.begin(); ii!=ppDataVec.end(); ++ii ) {
 
@@ -1295,6 +1306,44 @@ Realm::setup_property()
 	}
 	break;
 
+      case GENERIC: 
+        { 
+          // default property evaluator
+          PropertyEvaluator *propEval = NULL;
+          
+          // extract the property evaluator name
+          std::string propEvalName = matData->genericPropertyEvaluatorName_;
+
+          if ( propEvalName == "water_viscosity_T" ) {
+            propEval = new WaterViscosityTPropertyEvaluator(*metaData_);
+          }
+          else if ( propEvalName == "water_density_T" ) {
+            propEval = new WaterDensityTPropertyEvaluator(*metaData_);
+          }
+          else if ( propEvalName == "water_specific_heat_T" ) {
+            propEval = new WaterSpecHeatTPropertyEvaluator(*metaData_);
+            // create the enthalpy prop evaluator and store
+            WaterEnthalpyTPropertyEvaluator *theEnthPropEval 
+              = new WaterEnthalpyTPropertyEvaluator(*metaData_);
+            materialPropertys_.propertyEvalMap_[ENTHALPY_ID] = theEnthPropEval;
+          }
+          else if ( propEvalName == "water_thermal_conductivity_T" ) {
+            propEval = new WaterThermalCondTPropertyEvaluator(*metaData_);
+          }
+          else {
+            throw std::runtime_error("Realm::setup_property: unknown GENERIC type: " + propEvalName);
+          }
+          
+          // for now, all of the above are TempPropAlgs; push it back
+          TemperaturePropAlgorithm *auxAlg
+            = new TemperaturePropAlgorithm( *this, targetPart, thePropField, propEval);
+          propertyAlg_.push_back(auxAlg);
+
+          // push back property evaluator to map
+          materialPropertys_.propertyEvalMap_[thePropId] = propEval;
+        }
+        break;
+
         case MaterialPropertyType_END:
           break;
 
@@ -1597,9 +1646,9 @@ Realm::evaluate_properties()
   for ( size_t k = 0; k < propertyAlg_.size(); ++k ) {
     propertyAlg_[k]->execute();
   }
+  equationSystems_.evaluate_properties();
   double end_time = stk::cpu_time();
   timerPropertyEval_ += (end_time - start_time);
-
 }
 
 //--------------------------------------------------------------------------
@@ -2614,7 +2663,6 @@ Realm::register_interior_algorithm(
       it_pp->second->partVec_.push_back(part);
     }
   }
-
 }
 
 //--------------------------------------------------------------------------
@@ -2636,7 +2684,8 @@ Realm::register_wall_bc(
   const int nDim = metaData_->spatial_dimension();
 
   // register fields
-  const int numScsIp = theTopo.num_nodes();
+  MasterElement *meFC = get_surface_master_element(theTopo);
+  const int numScsIp = meFC->numIntPoints_;
 
   GenericFieldType *exposedAreaVec_
     = &(metaData_->declare_field<GenericFieldType>(static_cast<stk::topology::rank_t>(metaData_->side_rank()), "exposed_area_vector"));
@@ -2678,7 +2727,8 @@ Realm::register_inflow_bc(
   const int nDim = metaData_->spatial_dimension();
 
   // register fields
-  const int numScsIp = theTopo.num_nodes();
+  MasterElement *meFC = get_surface_master_element(theTopo);
+  const int numScsIp = meFC->numIntPoints_;
 
   GenericFieldType *exposedAreaVec_
     = &(metaData_->declare_field<GenericFieldType>(static_cast<stk::topology::rank_t>(metaData_->side_rank()), "exposed_area_vector"));
@@ -2719,7 +2769,8 @@ Realm::register_open_bc(
   const int nDim = metaData_->spatial_dimension();
 
   // register fields
-  const int numScsIp = theTopo.num_nodes();
+  MasterElement *meFC = get_surface_master_element(theTopo);
+  const int numScsIp = meFC->numIntPoints_;
 
   GenericFieldType *exposedAreaVec_
     = &(metaData_->declare_field<GenericFieldType>(static_cast<stk::topology::rank_t>(metaData_->side_rank()), "exposed_area_vector"));
@@ -2766,7 +2817,10 @@ Realm::register_contact_bc(
   //====================================================
 
   const int nDim = metaData_->spatial_dimension();
-  const int numScsIp = theTopo.num_nodes();
+
+  // register fields
+  MasterElement *meFC = get_surface_master_element(theTopo);
+  const int numScsIp = meFC->numIntPoints_;
 
   // exposed area vector
   GenericFieldType *exposedAreaVec_
@@ -2906,7 +2960,8 @@ Realm::register_symmetry_bc(
   const int nDim = metaData_->spatial_dimension();
 
   // register fields
-  const int numScsIp = theTopo.num_nodes();
+  MasterElement *meFC = get_surface_master_element(theTopo);
+  const int numScsIp = meFC->numIntPoints_;
 
   GenericFieldType *exposedAreaVec_
     = &(metaData_->declare_field<GenericFieldType>(static_cast<stk::topology::rank_t>(metaData_->side_rank()), "exposed_area_vector"));
@@ -3010,14 +3065,14 @@ Realm::register_non_conformal_bc(
 
   const int nDim = metaData_->spatial_dimension();
   
-  // size of ip variables
+  // register fields
   MasterElement *meFC = get_surface_master_element(theTopo);
-  const int numBip = meFC->numIntPoints_;
+  const int numScsIp = meFC->numIntPoints_;
   
   // exposed area vector
   GenericFieldType *exposedAreaVec_
     = &(metaData_->declare_field<GenericFieldType>(static_cast<stk::topology::rank_t>(metaData_->side_rank()), "exposed_area_vector"));
-  stk::mesh::put_field(*exposedAreaVec_, *part, nDim*numBip );
+  stk::mesh::put_field(*exposedAreaVec_, *part, nDim*numScsIp );
    
   //====================================================
   // Register non-conformal algorithms
@@ -3560,6 +3615,10 @@ Realm::get_volume_master_element(
         theElem = new HexSCV();
         break;
 
+      case stk::topology::HEX_27:
+        theElem = new Hex27SCV();
+        break;
+
       case stk::topology::TET_4:
         theElem = new TetSCV();
         break;
@@ -3574,6 +3633,10 @@ Realm::get_volume_master_element(
 
       case stk::topology::QUAD_4_2D:
         theElem = new Quad2DSCV();
+        break;
+
+      case stk::topology::QUAD_9_2D:
+        theElem = new Quad92DSCV();
         break;
 
       case stk::topology::TRI_3_2D:
@@ -3616,6 +3679,10 @@ Realm::get_surface_master_element(
         theElem = new HexSCS();
         break;
 
+      case stk::topology::HEX_27:
+        theElem = new Hex27SCS();
+        break;
+
       case stk::topology::TET_4:
         theElem = new TetSCS();
         break;
@@ -3632,6 +3699,10 @@ Realm::get_surface_master_element(
         theElem =  new Quad3DSCS();
         break;
 
+      case stk::topology::QUAD_9:
+        theElem =  new Quad93DSCS();
+        break;
+
       case stk::topology::TRI_3:
         theElem = new Tri3DSCS();
         break;
@@ -3640,12 +3711,20 @@ Realm::get_surface_master_element(
         theElem =  new Quad2DSCS();
         break;
 
+      case stk::topology::QUAD_9_2D:
+        theElem =  new Quad92DSCS();
+        break;
+
       case stk::topology::TRI_3_2D:
         theElem = new Tri2DSCS();
         break;
 
       case stk::topology::LINE_2:
         theElem = new Edge2DSCS();
+        break;
+
+      case stk::topology::LINE_3:
+        theElem = new Edge32DSCS();
         break;
 
       default:
@@ -3769,18 +3848,18 @@ Realm::get_lam_schmidt(
 //--------------------------------------------------------------------------
 double
 Realm::get_lam_prandtl(
-  const std::string dofName )
+  const std::string dofName, bool &prProvided )
 {
-  double factor = solutionOptions_->lamPrDefault_;
+  double factor = 1.0;
   std::map<std::string, double>::const_iterator iter
     = solutionOptions_->lamPrMap_.find(dofName);
   if (iter != solutionOptions_->lamPrMap_.end()) {
     factor = (*iter).second;
+    prProvided = true;
   }
   else {
-    throw std::runtime_error("laminar Prandtl not found");
+    prProvided = false;
   }
-
   return factor;
 }
 
@@ -4012,6 +4091,9 @@ Realm::post_converged_work()
   for ( size_t k = 0; k < postConvergedAlg_.size(); ++k)
     postConvergedAlg_[k]->execute();
 
+  if ( NULL != solutionNormPostProcessing_ )
+    solutionNormPostProcessing_->execute();
+
   equationSystems_.post_converged_work();
 }
 
@@ -4187,6 +4269,16 @@ Realm::get_inactive_selector()
   return (hasOverset_) ? (stk::mesh::Selector(*oversetManager_->inActivePart_) 
                           &!(stk::mesh::selectUnion(oversetManager_->orphanPointSurfaceVecBackground_)))
     : stk::mesh::Selector();
+}
+
+//--------------------------------------------------------------------------
+//-------- push_equation_to_systems() --------------------------------------
+//--------------------------------------------------------------------------
+void
+Realm::push_equation_to_systems(
+  EquationSystem *eqSystem)
+{
+  equationSystems_.equationSystemVector_.push_back(eqSystem);
 }
 
 } // namespace nalu

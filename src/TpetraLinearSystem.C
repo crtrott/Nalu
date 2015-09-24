@@ -780,9 +780,6 @@ TpetraLinearSystem::copy_stk_to_tpetra(
     Kokkos::RangePolicy<Kokkos::Serial>(0, buckets.size()), [&] (const int& ib) {
     const stk::mesh::Bucket & b = *buckets[ib];
 
-    if (!b.owned())
-      return;
-
     const int fieldSize = field_bytes_per_entity(*stkField, b) / (sizeof(double));
 
     ThrowRequire(numVectors == fieldSize);
@@ -1072,13 +1069,16 @@ TpetraLinearSystem::applyDirichletBCs(
   const unsigned beginPos,
   const unsigned endPos)
 {
+  stk::mesh::MetaData & metaData = realm_.meta_data();
   stk::mesh::BulkData & bulkData = realm_.bulk_data();
 
   double adbc_time = -stk::cpu_time();
   const unsigned p_size = bulkData.parallel_size();
   (void)p_size;
 
-  const stk::mesh::Selector selector = stk::mesh::selectUnion(parts)
+  const stk::mesh::Selector selector 
+    = (metaData.locally_owned_part() | metaData.globally_shared_part())
+    & stk::mesh::selectUnion(parts)
     & stk::mesh::selectField(*solutionField) 
     & !(realm_.get_inactive_selector());
 
@@ -1093,9 +1093,6 @@ TpetraLinearSystem::applyDirichletBCs(
 
     const unsigned fieldSize = field_bytes_per_entity(*solutionField, b) / sizeof(double);
     ThrowRequire(fieldSize == numDof_);
-
-    if (!b.owned() && !b.shared())
-      return;
 
     const stk::mesh::Bucket::size_type length   = b.size();
     const double * solution = (double*)stk::mesh::field_data(*solutionField, *b.begin());
@@ -1596,9 +1593,6 @@ TpetraLinearSystem::copy_tpetra_to_stk(
 
     const unsigned fieldSize = field_bytes_per_entity(*stkField, b) / sizeof(double);
     ThrowRequire(fieldSize == numDof_);
-
-    if (!b.owned())
-      return;
 
     const stk::mesh::Bucket::size_type length = b.size();
     double * stkFieldPtr = (double*)stk::mesh::field_data(*stkField, *b.begin());

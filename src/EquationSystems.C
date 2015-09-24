@@ -62,9 +62,8 @@ EquationSystems::EquationSystems(
 //--------------------------------------------------------------------------
 EquationSystems::~EquationSystems()
 {
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
-    delete *ii;
+  for (size_t ie = 0; ie < equationSystemVector_.size(); ++ie)
+    delete equationSystemVector_[ie];
 }
 
 //--------------------------------------------------------------------------
@@ -92,7 +91,9 @@ void EquationSystems::load(const YAML::Node & y_node)
           if (root()->debug()) NaluEnv::self().naluOutputP0() << "eqSys = LowMachEOM " << std::endl;
           bool elemCont = (realm_.realmUsesEdges_) ? false : true;
           get_if_present_no_default(*y_eqsys, "element_continuity_eqs", elemCont);
-          eqSys = new LowMachEquationSystem(*this, elemCont);
+          bool managePNG = false;
+          get_if_present_no_default(*y_eqsys, "manage_png", managePNG);
+          eqSys = new LowMachEquationSystem(*this, elemCont, managePNG);
         }
         else if( (y_eqsys = expect_map(y_system, "ShearStressTransport", true)) ) {
           if (root()->debug()) NaluEnv::self().naluOutputP0() << "eqSys = tke/sdr " << std::endl;
@@ -122,7 +123,9 @@ void EquationSystems::load(const YAML::Node & y_node)
         }
         else if( (y_eqsys = expect_map(y_system, "HeatConduction", true)) ) {
           if (root()->debug()) NaluEnv::self().naluOutputP0() << "eqSys = HeatConduction " << std::endl;
-          eqSys = new HeatCondEquationSystem(*this);
+          bool managePNG = false;
+          get_if_present_no_default(*y_eqsys, "manage_png", managePNG);
+          eqSys = new HeatCondEquationSystem(*this, managePNG);
         }
         else if( (y_eqsys = expect_map(y_system, "RadiativeTransport", true)) ) {
           if (root()->debug()) NaluEnv::self().naluOutputP0() << "eqSys = RadiativeTransport " << std::endl;
@@ -158,10 +161,8 @@ void EquationSystems::load(const YAML::Node & y_node)
           throw std::runtime_error("parser error EquationSystem::load: unknown equation system type");
         }
         
+        // load; particular equation system push back to vector is controled by the constructor
         eqSys->load(*y_eqsys);
-        
-        // soon:
-        //this->push_back(eqSys);
       }
     }
   }
@@ -187,15 +188,10 @@ EquationSystems::get_solver_block_name(
   return solverName;
 }
 
-void EquationSystems::breadboard() {}
-#if 0
+void EquationSystems::breadboard() 
 {
-  for ( size_t ieqSys = 0; ieqSys < this->size(); ++ieqSys )
-  {
-    (*this)[ieqSys]->breadboard();
-  }
+  // nothing as of yet
 }
-#endif
 
 Simulation* EquationSystems::root() { return parent()->root(); }
 Realm *EquationSystems::parent() { return &realm_; }
@@ -207,7 +203,6 @@ void
 EquationSystems::register_nodal_fields(
   const std::vector<std::string> targetNames)
 {
-
   stk::mesh::MetaData &meta_data = realm_.meta_data();
   
   for ( size_t itarget = 0; itarget < targetNames.size(); ++itarget ) {
@@ -218,14 +213,13 @@ EquationSystems::register_nodal_fields(
     }
     else {
       realm_.register_nodal_fields(targetPart);
-      std::vector<EquationSystem *>::iterator ii;
-      for( ii=begin(); ii!=end(); ++ii )
+      EquationSystemVector::iterator ii;
+      for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
         (*ii)->register_nodal_fields(targetPart);
     }
   }
-
 }
-
+  
 //--------------------------------------------------------------------------
 //-------- register_edge_fields --------------------------------------------
 //--------------------------------------------------------------------------
@@ -233,7 +227,6 @@ void
 EquationSystems::register_edge_fields(
   const std::vector<std::string> targetNames)
 {
-
   stk::mesh::MetaData &meta_data = realm_.meta_data();
   
   for ( size_t itarget = 0; itarget < targetNames.size(); ++itarget ) {
@@ -243,12 +236,11 @@ EquationSystems::register_edge_fields(
     }
     else {
       // found the part; no need to subset
-      std::vector<EquationSystem *>::iterator ii;
-      for( ii=begin(); ii!=end(); ++ii )
+      EquationSystemVector::iterator ii;
+      for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
         (*ii)->register_edge_fields(targetPart);
     }
   }
-
 }
 
 //--------------------------------------------------------------------------
@@ -258,9 +250,8 @@ void
 EquationSystems::register_element_fields(
   const std::vector<std::string> targetNames )
 {
-
   stk::mesh::MetaData &meta_data = realm_.meta_data();
-
+  
   for ( size_t itarget = 0; itarget < targetNames.size(); ++itarget ) {
     stk::mesh::Part *targetPart = meta_data.get_part(targetNames[itarget]);
     if ( NULL == targetPart ) {
@@ -272,13 +263,13 @@ EquationSystems::register_element_fields(
       if( stk::topology::ELEMENT_RANK != targetPart->primary_entity_rank() ) {
         throw std::runtime_error("Sorry, parts need to be elements.. " + targetNames[itarget]);
       }
-      std::vector<EquationSystem *>::iterator ii;
-      for( ii=begin(); ii!=end(); ++ii )
+      EquationSystemVector::iterator ii;
+      for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
         (*ii)->register_element_fields(targetPart, the_topo);
     }
   }
 }
-
+  
 //--------------------------------------------------------------------------
 //-------- register_interior_algorithm -------------------------------------
 //--------------------------------------------------------------------------
@@ -286,9 +277,8 @@ void
 EquationSystems::register_interior_algorithm(
   const std::vector<std::string> targetNames)
 {
-
   stk::mesh::MetaData &meta_data = realm_.meta_data();
-
+  
   for ( size_t itarget = 0; itarget < targetNames.size(); ++itarget ) {
     stk::mesh::Part *targetPart = meta_data.get_part(targetNames[itarget]);
     if ( NULL == targetPart ) {
@@ -299,16 +289,15 @@ EquationSystems::register_interior_algorithm(
       if( stk::topology::ELEMENT_RANK != targetPart->primary_entity_rank() ) {
         throw std::runtime_error("Sorry, parts need to be elements.. " + targetNames[itarget]);
       }
-
+      
       realm_.register_interior_algorithm(targetPart);
-      std::vector<EquationSystem *>::iterator ii;
-      for( ii=begin(); ii!=end(); ++ii ) {
+      EquationSystemVector::iterator ii;
+      for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
         (*ii)->register_interior_algorithm(targetPart);
-      }
     }
   }
 }
-
+  
 //--------------------------------------------------------------------------
 //-------- register_wall_bc ------------------------------------------------
 //--------------------------------------------------------------------------
@@ -317,7 +306,6 @@ EquationSystems::register_wall_bc(
   const std::string targetName,
   const WallBoundaryConditionData &wallBCData)
 {
-  
   stk::mesh::MetaData &meta_data = realm_.meta_data();
 
   stk::mesh::Part *targetPart = meta_data.get_part(targetName);
@@ -338,8 +326,8 @@ EquationSystems::register_wall_bc(
       }
       else {
         realm_.register_wall_bc(part, the_topo);
-        std::vector<EquationSystem *>::iterator ii;
-        for( ii=begin(); ii!=end(); ++ii )
+        EquationSystemVector::iterator ii;
+        for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
           (*ii)->register_wall_bc(part, the_topo, wallBCData);
       }
     }
@@ -374,8 +362,8 @@ EquationSystems::register_inflow_bc(
       }
       else {
         realm_.register_inflow_bc(part, the_topo);
-        std::vector<EquationSystem *>::iterator ii;
-        for( ii=begin(); ii!=end(); ++ii )
+        EquationSystemVector::iterator ii;
+        for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )       
           (*ii)->register_inflow_bc(part, the_topo, inflowBCData);
       }
     }
@@ -409,8 +397,8 @@ EquationSystems::register_open_bc(
       }
       else {
         realm_.register_open_bc(part, the_topo);
-        std::vector<EquationSystem *>::iterator ii;
-        for( ii=begin(); ii!=end(); ++ii )
+        EquationSystemVector::iterator ii;
+        for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
           (*ii)->register_open_bc(part, the_topo, openBCData);
       }
     }
@@ -444,8 +432,8 @@ EquationSystems::register_contact_bc(
       }
       else {
         realm_.register_contact_bc(part, the_topo, contactBCData);
-        std::vector<EquationSystem *>::iterator ii;
-        for( ii=begin(); ii!=end(); ++ii )
+        EquationSystemVector::iterator ii;
+        for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
           (*ii)->register_contact_bc(part, the_topo, contactBCData);
       }
     }
@@ -481,8 +469,8 @@ EquationSystems::register_symmetry_bc(
       }
       else {
         realm_.register_symmetry_bc(part, the_topo);
-        std::vector<EquationSystem *>::iterator ii;
-        for( ii=begin(); ii!=end(); ++ii )
+        EquationSystemVector::iterator ii;
+        for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
           (*ii)->register_symmetry_bc(part, the_topo, symmetryBCData);
       }
     }
@@ -569,8 +557,8 @@ EquationSystems::register_non_conformal_bc(
       }
       else {
         realm_.register_non_conformal_bc(part, the_topo);
-        std::vector<EquationSystem *>::iterator ii;
-        for( ii=begin(); ii!=end(); ++ii )
+        EquationSystemVector::iterator ii;
+        for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
           (*ii)->register_non_conformal_bc(part, the_topo);
       }
     } 
@@ -588,8 +576,8 @@ EquationSystems::register_overset_bc(
   realm_.setup_overset_bc(oversetBCData);
 
   // register algs on the equation system
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->register_overset_bc(/*nothing required as of yet*/);
 }
 
@@ -625,10 +613,9 @@ EquationSystems::register_surface_pp_algorithm(
   }
 
   // call through to equation systems
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->register_surface_pp_algorithm(theData, partVector);
-
 }
 
 //--------------------------------------------------------------------------
@@ -640,8 +627,8 @@ EquationSystems::register_initial_condition_fcn(
   const UserFunctionInitialConditionData &fcnIC)
 {
   // call through to equation systems
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->register_initial_condition_fcn(part, fcnIC.functionNames_, fcnIC.functionParams_);
 }
 
@@ -652,8 +639,8 @@ void
 EquationSystems::initialize()
 {
   double start_time = stk::cpu_time();
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii ) {
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii ) {
     if ( realm_.get_activate_memory_diagnostic() ) {
       NaluEnv::self().naluOutputP0() << "NaluMemory::EquationSystems::initialize(): " << (*ii)->name_ << std::endl;
       realm_.provide_memory_summary();
@@ -671,8 +658,8 @@ void
 EquationSystems::reinitialize_linear_system()
 {
   double start_time = stk::cpu_time();
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->reinitialize_linear_system();
   double end_time = stk::cpu_time();
   realm_.timerInitializeEqs_ += (end_time-start_time);
@@ -685,8 +672,8 @@ void
 EquationSystems::post_adapt_work()
 {
   double time = -stk::cpu_time();
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->post_adapt_work();
   
   // everyone needs props to be done..
@@ -695,7 +682,6 @@ EquationSystems::post_adapt_work()
   // load all time to adapt
   time += stk::cpu_time();
   realm_.timerAdapt_ += time;
-
 }
 
 //--------------------------------------------------------------------------
@@ -704,8 +690,8 @@ EquationSystems::post_adapt_work()
 void
 EquationSystems::populate_derived_quantities()
 {
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->populate_derived_quantities();
 }
 
@@ -715,8 +701,8 @@ EquationSystems::populate_derived_quantities()
 void
 EquationSystems::initial_work()
 {
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->initial_work();
 }
 
@@ -726,8 +712,8 @@ EquationSystems::initial_work()
 bool
 EquationSystems::solve_and_update()
 {
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->solve_and_update();
   
   // memory diagnostic
@@ -737,12 +723,12 @@ EquationSystems::solve_and_update()
   }
 
   // add a post iteration work section
-  for( ii=begin(); ii!=end(); ++ii )
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->post_iter_work();
   
   // check equations for convergence
   bool overallConvergence = true;
-  for( ii=begin(); ii!=end(); ++ii ) {
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii ) {
     const bool systemConverged = (*ii)->system_is_converged();
     if ( !systemConverged )
       overallConvergence = false;
@@ -759,8 +745,8 @@ double
 EquationSystems::provide_system_norm()
 {
   double maxNorm = -1.0e16;
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     maxNorm = std::max(maxNorm, (*ii)->provide_scaled_norm());
   return maxNorm;
 }
@@ -773,8 +759,8 @@ EquationSystems::provide_mean_system_norm()
 {
   double meanNorm = 0.0;
   double normIncrement = 0.0;
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii ) {
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii ) {
     meanNorm += (*ii)->provide_norm();
     normIncrement += (*ii)->provide_norm_increment();
   }
@@ -787,8 +773,8 @@ EquationSystems::provide_mean_system_norm()
 void
 EquationSystems::dump_eq_time()
 {
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii ) {
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii ) {
     (*ii)->dump_eq_time();
   }
 }
@@ -799,8 +785,8 @@ EquationSystems::dump_eq_time()
 void
 EquationSystems::predict_state()
 {
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->predict_state();
 }
 
@@ -810,8 +796,8 @@ EquationSystems::predict_state()
 void
 EquationSystems::populate_boundary_data()
 {
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii ) {
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii ) {
     for ( size_t k = 0; k < (*ii)->bcDataAlg_.size(); ++k ) {
       (*ii)->bcDataAlg_[k]->execute();
     }
@@ -824,8 +810,8 @@ EquationSystems::populate_boundary_data()
 void
 EquationSystems::boundary_data_to_state_data()
 {
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii ) {
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii ) {
     for ( size_t k = 0; k < (*ii)->bcDataMapAlg_.size(); ++k ) {
       (*ii)->bcDataMapAlg_[k]->execute();
     }
@@ -838,8 +824,8 @@ EquationSystems::boundary_data_to_state_data()
 void
 EquationSystems::provide_output()
 {
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->provide_output();
 }
 
@@ -850,8 +836,8 @@ void
 EquationSystems::pre_timestep_work()
 {
   // do the work
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->pre_timestep_work();
 }
 
@@ -861,9 +847,20 @@ EquationSystems::pre_timestep_work()
 void
 EquationSystems::post_converged_work()
 {
-  std::vector<EquationSystem *>::iterator ii;
-  for( ii=begin(); ii!=end(); ++ii )
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->post_converged_work();
+}
+
+//--------------------------------------------------------------------------
+//-------- evaluate_properties----------------------------------------------
+//--------------------------------------------------------------------------
+void
+EquationSystems::evaluate_properties()
+{
+  EquationSystemVector::iterator ii;
+  for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
+    (*ii)->evaluate_properties();
 }
 
 } // namespace nalu

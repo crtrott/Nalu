@@ -61,6 +61,7 @@ class EquationSystems;
 class OutputInfo;
 class AveragingInfo;
 class PostProcessingInfo;
+class SolutionNormPostProcessing;
 class PeriodicManager;
 class Realms;
 class Simulation;
@@ -281,7 +282,7 @@ public:
   double get_lam_schmidt(
     const std::string dofname);
   double get_lam_prandtl(
-    const std::string dofname);
+    const std::string dofname, bool &prProvided);
   double get_turb_schmidt(
     const std::string dofname);
   double get_turb_prandtl(
@@ -328,6 +329,10 @@ public:
 
   // inactive part
   stk::mesh::Selector get_inactive_selector();
+
+  // push back equation to equation systems vector
+  void push_equation_to_systems(
+    EquationSystem *eqSystem);
 
   Realms& realms_;
 
@@ -386,6 +391,7 @@ public:
   OutputInfo *outputInfo_;
   AveragingInfo *averagingInfo_;
   PostProcessingInfo *postProcessingInfo_;
+  SolutionNormPostProcessing *solutionNormPostProcessing_;
 
   std::vector<Algorithm *> propertyAlg_;
   std::map<PropertyIdentifier, ScalarFieldType *> propertyMap_;
@@ -482,7 +488,6 @@ public:
   double get_turb_model_constant(
     const TurbulenceModelConstant turbModelEnum);
   bool process_adaptivity();
-
 };
 
 } // namespace nalu

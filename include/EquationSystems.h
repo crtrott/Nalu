@@ -43,16 +43,16 @@ class Simulation;
 
 typedef std::vector<EquationSystem *> EquationSystemVector;
 
-class EquationSystems : public EquationSystemVector
+class EquationSystems
 {
-public:
+ public:
 
   EquationSystems(
     Realm &realm);
   ~EquationSystems();
 
   void load(const YAML::Node & node);
-
+  
   std::string get_solver_block_name(
     const std::string eqName);
 
@@ -61,6 +61,10 @@ public:
   Simulation *root();
   Realm *parent();
 
+  // ease of access methods to particular equation system
+  size_t size() {return equationSystemVector_.size();}
+  EquationSystem *operator[](int i) { return equationSystemVector_[i];}
+  
   void register_nodal_fields(
     const std::vector<std::string> targetNames);
 
@@ -127,13 +131,14 @@ public:
   void dump_eq_time();
   void pre_timestep_work();
   void post_converged_work();
-
+  void evaluate_properties();
+  
   Realm &realm_;
   std::string name_;
   int maxIterations_;
 
+  EquationSystemVector equationSystemVector_;
   std::map<std::string, std::string> solverSpecMap_;
-
 };
 
 } // namespace nalu

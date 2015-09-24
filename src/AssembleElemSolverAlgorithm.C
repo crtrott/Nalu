@@ -48,6 +48,9 @@ AssembleElemSolverAlgorithm::AssembleElemSolverAlgorithm(
   // nothing
 }
 
+//--------------------------------------------------------------------------
+//-------- initialize_connectivity -----------------------------------------
+//--------------------------------------------------------------------------
 void
 AssembleElemSolverAlgorithm::initialize_connectivity()
 {

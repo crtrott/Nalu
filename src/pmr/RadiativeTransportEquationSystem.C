@@ -97,10 +97,9 @@ RadiativeTransportEquationSystem::RadiativeTransportEquationSystem(
     scalarFluxOld_(NULL),
     absorptionCoeff_(NULL),
     scatteringCoeff_(NULL),
-    scVolume_(NULL),
     edgeAreaVec_(NULL),
     irradiation_(NULL),
-    wallTemperature_(NULL),
+    bcTemperature_(NULL),
     assembledBoundaryArea_(NULL),
     isInit_(true),
     ordinateDirections_(0),
@@ -117,7 +116,7 @@ RadiativeTransportEquationSystem::RadiativeTransportEquationSystem(
   linsys_->provideOutput_ = false;
 
   // push back EQ to manager
-  realm_.equationSystems_.push_back(this);
+  realm_.push_equation_to_systems(this);
 
   stk::mesh::MetaData &meta_data = realm_.meta_data();
   const int nDim = meta_data.spatial_dimension();
@@ -455,23 +454,14 @@ RadiativeTransportEquationSystem::register_edge_fields(
 }
 
 //--------------------------------------------------------------------------
-//-------- register_element_fields -------------------------------------------
+//-------- register_element_fields -----------------------------------------
 //--------------------------------------------------------------------------
 void
 RadiativeTransportEquationSystem::register_element_fields(
   stk::mesh::Part *part,
   const stk::topology &theTopo)
 {
-  //====================================================
-  // Register element data
-  //====================================================
-
-  stk::mesh::MetaData & meta_data = realm_.meta_data();
-
-  const int numScvIp = theTopo.num_nodes();
-  scVolume_ = &(meta_data.declare_field<GenericFieldType>(stk::topology::ELEMENT_RANK, "sc_volume"));
-  stk::mesh::put_field(*scVolume_, *part, numScvIp );
-
+  // n/a
 }
 
 //--------------------------------------------------------------------------
@@ -576,23 +566,23 @@ RadiativeTransportEquationSystem::register_wall_bc(
     irradiation_ = &(meta_data.declare_field<ScalarFieldType>(stk::topology::NODE_RANK, "irradiation"));
     stk::mesh::put_field(*irradiation_, *part);
 
-    wallTemperature_ = &(meta_data.declare_field<ScalarFieldType>(stk::topology::NODE_RANK, "wall_temperature"));
-    stk::mesh::put_field(*wallTemperature_, *part);
+    bcTemperature_ = &(meta_data.declare_field<ScalarFieldType>(stk::topology::NODE_RANK, "temperature_bc"));
+    stk::mesh::put_field(*bcTemperature_, *part);
 
     assembledBoundaryArea_ = &(meta_data.declare_field<ScalarFieldType>(stk::topology::NODE_RANK, "assembled_boundary_area"));
     stk::mesh::put_field(*assembledBoundaryArea_, *part);
 
-    // interior temperature is not over written by boundary value; push to wall_temperature
+    // interior temperature is not over written by boundary value; push to bcTemperature_
     Temperature theTemp = userData.temperature_;
     std::vector<double> userSpec(1);
     userSpec[0] = theTemp.temperature_;
     ConstantAuxFunction *theAuxFunc = new ConstantAuxFunction(0, 1, userSpec);
     AuxFunctionAlgorithm *auxAlg
       = new AuxFunctionAlgorithm(realm_, part,
-                                 wallTemperature_, theAuxFunc,
+                                 bcTemperature_, theAuxFunc,
                                  stk::topology::NODE_RANK);
     
-    // interface bcs expect wall temperature from elsewhere; just push this wall bc as part of initial work
+    // interface bcs expect bc temperature from elsewhere; just push this wall bc as part of initial work
     if ( isInterface )
       realm_.initCondAlg_.push_back(auxAlg);
     else 
@@ -959,7 +949,7 @@ RadiativeTransportEquationSystem::compute_bc_intensity()
     stk::mesh::Bucket & b = **ib ;
     const size_t length   = b.size();
     double *intensityBc = stk::mesh::field_data(*intensityBc_, b);
-    const double *temperature = stk::mesh::field_data(*wallTemperature_, b);
+    const double *temperature = stk::mesh::field_data(*bcTemperature_, b);
     const double *irradiation = stk::mesh::field_data(*irradiation_, b);
     const double *emissivity = stk::mesh::field_data(*emissivity_, b);
     const double *transmissivity = stk::mesh::field_data(*transmissivity_, b);

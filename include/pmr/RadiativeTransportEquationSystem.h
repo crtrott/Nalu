@@ -124,10 +124,9 @@ public:
   ScalarFieldType *scalarFluxOld_;
   ScalarFieldType *absorptionCoeff_;
   ScalarFieldType *scatteringCoeff_;
-  GenericFieldType *scVolume_;
   VectorFieldType *edgeAreaVec_;
   ScalarFieldType *irradiation_;
-  ScalarFieldType *wallTemperature_;
+  ScalarFieldType *bcTemperature_;
   ScalarFieldType *assembledBoundaryArea_;
   AlgorithmDriver *bcIntensityAlgDriver_;
   
