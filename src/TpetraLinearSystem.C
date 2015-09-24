@@ -936,7 +936,8 @@ TpetraLinearSystem::finalizeLinearSystem()
     const size_t numRows = rowMap.getNodeNumElements();
     std::vector<GlobalOrdinal> newInd;
     //KOKKOS: Loop noparallel Graph insertGlobalIndices
-    for(size_t localRow=0; localRow < numRows; ++localRow) {
+    Kokkos::parallel_for("Nalu::TpetraLinearSystem::finalizeLinearSystemB",
+      Kokkos::RangePolicy<Kokkos::Serial>(0,numRows), [&] (const size_t& localRow) {
       const GlobalOrdinal row = rowMap.getGlobalElement(localRow);
       Teuchos::ArrayView<const LocalOrdinal> ind;
       ownedPlusGloballyOwnedGraph.getLocalRowView(localRow, ind);
@@ -948,7 +949,7 @@ TpetraLinearSystem::finalizeLinearSystem()
           newInd[j] = colMap.getGlobalElement(ind[j]);
         }
       ownedGraph_->insertGlobalIndices(row, newInd);
-    }
+    });
   }
   ownedGraph_->fillComplete(ownedRowsMap_, ownedRowsMap_);
 
@@ -1024,7 +1025,7 @@ TpetraLinearSystem::sumInto(
 
   static std::vector<LocalOrdinal> localIds;
   localIds.resize(numRows);
-  //KOKKOS: Loop parallel
+  //KOKKOS: Nested Loop parallel
   //Kokkos::parallel_for("Nalu::TpetraLinearSystem::sumIntoA",
   //  Kokkos::RangePolicy<Kokkos::Serial>(0,n_obj), [&] (const size_t& i) {
   for(size_t i = 0; i < n_obj; i++) {
