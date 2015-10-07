@@ -22,7 +22,7 @@
 
 #include <Kokkos_Core.hpp>
 
-namespace stk { namespace mesh { struct Entity; } }
+#include <stk_mesh/base/Entity.hpp>
 
 namespace stk{
 namespace mesh{

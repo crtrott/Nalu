@@ -998,7 +998,7 @@ TpetraLinearSystem::sumInto(
     const Kokkos::View<const stk::mesh::Entity*> & entities,
     const Kokkos::View<const double*> & rhs,
     const Kokkos::View<const double*> & lhs,
-    const char *trace_tag=0)
+    const char *trace_tag)
 {
   stk::mesh::BulkData & bulkData = realm_.bulk_data();
 
@@ -1036,7 +1036,7 @@ TpetraLinearSystem::sumInto(
 
     if(localId < maxOwnedRowId_) {
       ownedMatrix_->sumIntoLocalValues(localId, localIds, vals);
-      ownedRhs_->sumIntoLocalValue(localId, rhs(r);
+      ownedRhs_->sumIntoLocalValue(localId, rhs(r));
     }
     else if(localId < maxGloballyOwnedRowId_) {
       const LocalOrdinal actualLocalId = localId - maxOwnedRowId_;

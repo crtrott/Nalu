@@ -91,9 +91,9 @@ AssembleElemSolverAlgorithm::execute()
   for (unsigned bucketOffset = 0; bucketOffset < elem_buckets.size(); bucketOffset += numWorkBuckets)
   {
 
-    const int bucketEnd = std::min(bucketOffset + numWorkBuckets, elem_buckets.size());
+    const int bucketEnd = std::min(bucketOffset + numWorkBuckets, (unsigned int)elem_buckets.size());
     Kokkos::parallel_for("Nalu::AssembleElemSolverAlgorithm::execute",
-        Kokkos::TeamPolicy<Kokkos::Serial>(bucketEnd-bucketOffset, Kokkos::AUTO), [&] (const team_type team) {
+        Kokkos::TeamPolicy<Kokkos::Serial>(bucketEnd-bucketOffset, Kokkos::AUTO), [&] (const team_type& team) {
       const int ib = team.league_rank();
       const stk::mesh::Bucket & b = *elem_buckets[bucketOffset+ib];
       const stk::mesh::Bucket::size_type length   = b.size();
@@ -122,7 +122,7 @@ AssembleElemSolverAlgorithm::execute()
         double * const p_lhs = &lhsScratch(ib,k,0);
         double * const p_rhs = &rhsScratch(ib,k,0);
 
-        stk::mesh::Entity * p_connected_nodes = connectedNodesScratch(ib,k,0);
+        stk::mesh::Entity * p_connected_nodes = &connectedNodesScratch(ib,k,0);
         // extract node relations and provide connected nodes
         stk::mesh::Entity const * node_rels = b.begin_nodes(k);
         int num_nodes = b.num_nodes(k);
@@ -133,7 +133,7 @@ AssembleElemSolverAlgorithm::execute()
         for ( int ni = 0; ni < num_nodes; ++ni ) {
           stk::mesh::Entity node = node_rels[ni];
           // set connected nodes
-          connected_nodes[ni] = node;
+          p_connected_nodes[ni] = node;
         }
 
         for ( int i = 0; i < lhsSize; ++i )
