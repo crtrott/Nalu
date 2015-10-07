@@ -20,6 +20,8 @@
 #include <vector>
 #include <string>
 
+#include <Kokkos_Core.hpp>
+
 namespace stk { namespace mesh { struct Entity; } }
 
 namespace stk{
@@ -71,6 +73,14 @@ public:
     const char *trace_tag=0
     )=0;
 
+  virtual void sumInto(
+      const Kokkos::View<const stk::mesh::Entity*> & sym_meshobj,
+      const Kokkos::View<const double*> & rhs,
+      const Kokkos::View<const double*> & lhs,
+      const char *trace_tag=0)
+  {
+
+  }
   virtual void applyDirichletBCs(
     stk::mesh::FieldBase * solutionField,
     stk::mesh::FieldBase * bcValuesField,

@@ -993,6 +993,59 @@ TpetraLinearSystem::zeroSystem()
 
 }
 
+void
+TpetraLinearSystem::sumInto(
+    const Kokkos::View<const stk::mesh::Entity*> & entities,
+    const Kokkos::View<const double*> & rhs,
+    const Kokkos::View<const double*> & lhs,
+    const char *trace_tag=0)
+{
+  stk::mesh::BulkData & bulkData = realm_.bulk_data();
+
+  const size_t n_obj = entities.dimension_0();
+  const size_t numRows = n_obj * numDof_;
+
+//  ThrowAssert(numRows == rhs.size());
+//  ThrowAssert(numRows*numRows == lhs.size());
+
+  std::vector<LocalOrdinal> localIds(numRows);
+  //KOKKOS: Nested Loop parallel
+  //Kokkos::parallel_for("Nalu::TpetraLinearSystem::sumIntoA",
+  //  Kokkos::RangePolicy<Kokkos::Serial>(0,n_obj), [&] (const size_t& i) {
+  for(size_t i = 0; i < n_obj; i++) {
+    const stk::mesh::Entity entity = entities(i);
+    const stk::mesh::EntityId entityId = bulkData.identifier(entity);
+    (void)entityId;
+    const stk::mesh::EntityId naluId = *stk::mesh::field_data(*realm_.naluGlobalId_, entity);
+    const LocalOrdinal localOffset = lookup_myLID(myLIDs_, naluId, "sumInto", entity) * numDof_;
+    for(size_t d=0; d < numDof_; ++d) {
+      size_t lid = i*numDof_ + d;
+      localIds[lid] = localOffset + d;
+    }
+  }
+  std::vector<double> vals(numRows);
+  //KOKKOS: Loop noparallel Matrix Vector sumIntoLocalValues
+  //Kokkos::parallel_for("Nalu::TpetraLinearSystem::sumIntoB",
+  //  Kokkos::RangePolicy<Kokkos::Serial>(0,numRows), [&] (const size_t& r) {
+  for(size_t r = 0; r < numRows; r++) {
+    const LocalOrdinal localId = localIds[r];
+
+    //KOKKOS: nested Loop parallel
+    for(size_t c=0; c < numRows; ++c) // numRows == numCols
+      vals[c] = lhs(r*numRows + c);
+
+    if(localId < maxOwnedRowId_) {
+      ownedMatrix_->sumIntoLocalValues(localId, localIds, vals);
+      ownedRhs_->sumIntoLocalValue(localId, rhs(r);
+    }
+    else if(localId < maxGloballyOwnedRowId_) {
+      const LocalOrdinal actualLocalId = localId - maxOwnedRowId_;
+      globallyOwnedMatrix_->sumIntoLocalValues(actualLocalId, localIds, vals);
+      globallyOwnedRhs_->sumIntoLocalValue(actualLocalId, rhs(r));
+    }
+  }
+
+}
 
 
 void

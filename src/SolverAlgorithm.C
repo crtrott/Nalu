@@ -52,5 +52,14 @@ SolverAlgorithm::apply_coeff(
   eqSystem_->linsys_->sumInto(sym_meshobj, rhs, lhs, trace_tag);
 }
 
+void
+SolverAlgorithm::apply_coeff(
+    const Kokkos::View<const stk::mesh::Entity*> & sym_meshobj,
+    const Kokkos::View<const double*> & rhs,
+    const Kokkos::View<const double*> & lhs, const char *trace_tag)
+{
+  eqSystem_->linsys_->sumInto(sym_meshobj, rhs, lhs, trace_tag);
+}
+
 } // namespace nalu
 } // namespace Sierra

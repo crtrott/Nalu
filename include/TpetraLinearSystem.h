@@ -72,6 +72,12 @@ public:
     const char *trace_tag=0
     );
 
+  virtual void sumInto(
+      const Kokkos::View<const stk::mesh::Entity*> & sym_meshobj,
+      const Kokkos::View<const double*> & rhs,
+      const Kokkos::View<const double*> & lhs,
+      const char *trace_tag=0);
+
   void applyDirichletBCs(
     stk::mesh::FieldBase * solutionField,
     stk::mesh::FieldBase * bcValuesField,

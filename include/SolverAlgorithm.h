@@ -13,6 +13,7 @@
 
 #include <stk_mesh/base/Entity.hpp>
 #include <vector>
+#include <Kokkos_Core.hpp>
 
 namespace sierra{
 namespace nalu{
@@ -42,6 +43,11 @@ protected:
     const std::vector<double> &lhs,
     const char *trace_tag=0);
   
+  void apply_coeff(
+      const Kokkos::View<const stk::mesh::Entity*> & sym_meshobj,
+      const Kokkos::View<const double*> & rhs,
+      const Kokkos::View<const double*> & lhs, const char *trace_tag=0);
+
   EquationSystem *eqSystem_;
 };
 
