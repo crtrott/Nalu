@@ -22,6 +22,8 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
+#include <Kokkos_Core.hpp>
+
 namespace sierra{
 namespace nalu{
 
@@ -60,9 +62,7 @@ void metricInverse3D(const double * dx_dr, double * dr_dx)
 
 }
 
-class ScalarElemDiffusionFunctor{
-
-protected:
+class CVFEMScalarElemDiffusionFunctor {
   //Bucket and Element Data
   stk::mesh::Bucket * b_;
   stk::mesh::BulkData & bulk_data_;
@@ -75,9 +75,9 @@ protected:
   VectorFieldType & coordinates_;
 
   //Output
-  double * p_lhs_;
-  double * p_rhs_;
-  std::vector<stk::mesh::Entity> * p_connected_nodes_;
+  Kokkos::View<double **, Kokkos::LayoutRight> lhs_;
+  Kokkos::View<double **, Kokkos::LayoutRight> rhs_;
+  Kokkos::View<stk::mesh::Entity **, Kokkos::LayoutRight> connected_nodes_;
 
   //Parameters
   const int *lrscv;
@@ -85,62 +85,7 @@ protected:
   int numScsIp_;
   int nodesPerElement_;
 
-public:
-  ScalarElemDiffusionFunctor(
-      stk::mesh::BulkData & bulk_data,
-      stk::mesh::MetaData & meta_data,
-      ScalarFieldType & scalarQ,
-      ScalarFieldType & diffFluxCoeff,
-      VectorFieldType & coordinates,
-      int nDim):
-      b_(0),
-      bulk_data_(bulk_data),
-      meta_data_(meta_data),
-      meSCS_(0),
-      scalarQ_(scalarQ),
-      diffFluxCoeff_(diffFluxCoeff),
-      coordinates_(coordinates),
-      p_lhs_(0),
-      p_rhs_(0),
-      p_connected_nodes_(0),
-      lrscv(0),
-      nDim_(nDim),
-      numScsIp_(0),
-      nodesPerElement_(0)
-  {
-  }
-
-  virtual void bind_data(stk::mesh::Bucket & b,
-    MasterElement & meSCS,
-    double * p_lhs,
-    double * p_rhs,
-    std::vector<stk::mesh::Entity> & connected_nodes)
-  {
-    b_ = &b;
-    meSCS_ = &meSCS;
-    p_lhs_ = p_lhs;
-    p_rhs_ = p_rhs;
-    p_connected_nodes_ = &connected_nodes;
-    lrscv = meSCS_->adjacentNodes();
-    nodesPerElement_ = meSCS_->nodesPerElement_;
-    numScsIp_ = meSCS_->numIntPoints_;
-  }
-
-  virtual void release_data()
-  {
-    // does nothing
-  }
-
-
-  virtual ~ScalarElemDiffusionFunctor(){}
-
-  virtual void operator()(int elem_offset) = 0;
-
-};
-
-class CVFEMScalarElemDiffusionFunctor: public ScalarElemDiffusionFunctor{
-
-  double * p_shape_function_;
+  Kokkos::View<double **, Kokkos::LayoutRight> shape_function_;
 
 public:
   CVFEMScalarElemDiffusionFunctor(
@@ -149,32 +94,33 @@ public:
       ScalarFieldType & scalarQ,
       ScalarFieldType & diffFluxCoeff,
       VectorFieldType & coordinates,
-      int nDim):
-      ScalarElemDiffusionFunctor(bulk_data, meta_data,
-        scalarQ, diffFluxCoeff, coordinates, nDim),
-      p_shape_function_(0)
-  { }
-
-  virtual ~CVFEMScalarElemDiffusionFunctor(){}
-
-  virtual void bind_data(stk::mesh::Bucket & b,
-    MasterElement & meSCS,
-    double * p_lhs,
-    double * p_rhs,
-    std::vector<stk::mesh::Entity> & connected_nodes)
+      int nDim,
+      stk::mesh::Bucket & b,
+      MasterElement & meSCS,
+      Kokkos::View<double **, Kokkos::LayoutRight> p_lhs,
+      Kokkos::View<double **, Kokkos::LayoutRight> p_rhs,
+      Kokkos::View<stk::mesh::Entity **, Kokkos::LayoutRight> connected_nodes,
+      Kokkos::View<double **, Kokkos::LayoutRight> shape_function)
+: b_(&b),
+  bulk_data_(bulk_data),
+  meta_data_(meta_data),
+  meSCS_(&meSCS),
+  scalarQ_(scalarQ),
+  diffFluxCoeff_(diffFluxCoeff),
+  coordinates_(coordinates),
+  lhs_(p_lhs),
+  rhs_(p_rhs),
+  connected_nodes_(connected_nodes),
+  lrscv(meSCS_->adjacentNodes()),
+  nDim_(nDim),
+  numScsIp_(meSCS_->numIntPoints_),
+  nodesPerElement_(meSCS_->nodesPerElement_),
+  shape_function_(shape_function)
   {
-    ScalarElemDiffusionFunctor::bind_data(b, meSCS, p_lhs, p_rhs, connected_nodes);
-
-    p_shape_function_ = new double[numScsIp_*nodesPerElement_];
-    meSCS_->shape_fcn(&p_shape_function_[0]);
+    meSCS_->shape_fcn(&shape_function_(0, 0));
   }
 
-  virtual void release_data()
-  {
-    delete[] p_shape_function_;
-  }
-
-  void operator()(int elem_offset){
+  void operator()(int elem_offset) {
     // get elem
     const stk::mesh::Entity elem = (*b_)[elem_offset];
 
@@ -194,15 +140,15 @@ public:
     const int rhsSize = nodesPerElement_;
     // zero lhs/rhs
     for ( int p = 0; p < lhsSize; ++p )
-      p_lhs_[p] = 0.0;
+      lhs_(elem_offset, p) = 0.0;
     for ( int p = 0; p < rhsSize; ++p )
-      p_rhs_[p] = 0.0;
+      rhs_(elem_offset, p) = 0.0;
 
     for ( int ni = 0; ni < nodesPerElement_; ++ni ) {
       stk::mesh::Entity node = node_rels[ni];
 
       // set connected nodes
-      (*p_connected_nodes_)[ni] = node;
+      connected_nodes_(elem_offset, ni) = node;
 
       const double * coords = stk::mesh::field_data(coordinates_, node );
 
@@ -236,9 +182,8 @@ public:
 
       // save off ip values; offset to Shape Function
       double muIp = 0.0;
-      const int offSetSF = ip*nodesPerElement_;
       for ( int ic = 0; ic < nodesPerElement_; ++ic ) {
-        const double r = p_shape_function_[offSetSF+ic];
+        const double r = shape_function_(ip, ic);
         muIp += r*p_diffFluxCoeff[ic];
       }
 
@@ -255,13 +200,13 @@ public:
         qDiff += lhsfacDiff*p_scalarQ[ic];
 
         // lhs; il then ir
-        p_lhs_[rowL+ic] += lhsfacDiff;
-        p_lhs_[rowR+ic] -= lhsfacDiff;
+        lhs_(elem_offset, rowL+ic) += lhsfacDiff;
+        lhs_(elem_offset, rowR+ic) -= lhsfacDiff;
       }
 
       // rhs; il then ir
-      p_rhs_[il] -= qDiff;
-      p_rhs_[ir] += qDiff;
+      rhs_(elem_offset, il) -= qDiff;
+      rhs_(elem_offset, ir) += qDiff;
 
     }
 
@@ -269,6 +214,7 @@ public:
 
 };
 
+/*
 class CollocationScalarElemDiffusionFunctor: public ScalarElemDiffusionFunctor{
 
   double * p_deriv_;
@@ -432,6 +378,7 @@ public:
   }
 
 };
+*/
 
 }
 

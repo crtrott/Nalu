@@ -78,29 +78,36 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
 
   const int nDim = meta_data.spatial_dimension();
 
-  // space for LHS/RHS; nodesPerElem*nodesPerElem* and nodesPerElem
-  std::vector<double> lhs;
-  std::vector<double> rhs;
-  std::vector<stk::mesh::Entity> connected_nodes;
+  const int numWorkBuckets = 32;
+  const int maxElementsPerBucket = 512;
+  const int maxNodesPerElement = 8;
+  const int maxNumScsIp = 8;
+  const int lhsSize = maxNodesPerElement*maxNodesPerElement;
+  const int rhsSize = maxNodesPerElement;
+//  Kokkos::View<double******> lhs("lhsScratch", numWorkBuckets, maxElementsPerBucket,
+//      maxNodesPerElement, maxNodesPerElement, sizeOfSystem_, sizeOfSystem_);
+  Kokkos::View<double***, Kokkos::LayoutRight> lhsScratch("lhsScratch", numWorkBuckets, maxElementsPerBucket, lhsSize);
+  Kokkos::View<double***, Kokkos::LayoutRight> rhsScratch("rhsScratch", numWorkBuckets, maxElementsPerBucket, rhsSize);
+  Kokkos::View<stk::mesh::Entity***, Kokkos::LayoutRight> connectedNodesScratch("cnScratch", numWorkBuckets, maxElementsPerBucket, maxNodesPerElement);
+  Kokkos::View<double***, Kokkos::LayoutRight> shapeFunctionScratch("shapeFcnScratch", numWorkBuckets, maxNumScsIp, maxNodesPerElement);
 
-  // supplemental algorithm setup
+  /*// supplemental algorithm setup
   const size_t supplementalAlgSize = supplementalAlg_.size();
   for ( size_t i = 0; i < supplementalAlgSize; ++i )
-    supplementalAlg_[i]->setup();
+    supplementalAlg_[i]->setup();*/
 
   // deal with state
   ScalarFieldType &scalarQNp1   = scalarQ_->field_of_state(stk::mesh::StateNP1);
 
-  ScalarElemDiffusionFunctor * diffusionOperator;
+/*  ScalarElemDiffusionFunctor * diffusionOperator;
 
   if (useCollocation_){
     diffusionOperator = new CollocationScalarElemDiffusionFunctor(bulk_data, meta_data,
       scalarQNp1, *diffFluxCoeff_, *coordinates_, nDim);
   }
-  else{
-    diffusionOperator = new CVFEMScalarElemDiffusionFunctor(bulk_data, meta_data,
-      scalarQNp1, *diffFluxCoeff_, *coordinates_, nDim);
-   }
+  else*/
+  //{
+   //}
 
   // define some common selectors
   stk::mesh::Selector s_locally_owned_union = meta_data.locally_owned_part()
@@ -116,45 +123,30 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
 
     // extract master element
     MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
-    MasterElement *meSCV = realm_.get_volume_master_element(b.topology());
 
-    // extract master element specifics
-    const int nodesPerElement = meSCS->nodesPerElement_;
-
-    // resize some things; matrix related
-    const int lhsSize = nodesPerElement*nodesPerElement;
-    const int rhsSize = nodesPerElement;
-    lhs.resize(lhsSize);
-    rhs.resize(rhsSize);
-    connected_nodes.resize(nodesPerElement);
-
-    // pointer to lhs/rhs
-    double *p_lhs = &lhs[0];
-    double *p_rhs = &rhs[0];
-
-    diffusionOperator->bind_data(b, *meSCS, p_lhs, p_rhs, connected_nodes);
+    CVFEMScalarElemDiffusionFunctor diffusionOperator(bulk_data, meta_data,
+        scalarQNp1, *diffFluxCoeff_, *coordinates_, nDim, b, *meSCS,
+        Kokkos::subview(lhsScratch, 0, Kokkos::ALL(), Kokkos::ALL()),
+        Kokkos::subview(rhsScratch, 0, Kokkos::ALL(), Kokkos::ALL()),
+        Kokkos::subview(connectedNodesScratch, 0, Kokkos::ALL(), Kokkos::ALL()),
+        Kokkos::subview(shapeFunctionScratch, 0, Kokkos::ALL(), Kokkos::ALL())
+        );
 
     for ( size_t k = 0 ; k < length ; ++k ) {
-
-      //WARNING: do not thread this functor.  It is not thread-safe because each element scatters to all of its nodes.
-      (*diffusionOperator)(k);
+      diffusionOperator(k);
 
       // get elem
       stk::mesh::Entity elem = b[k];
       // call supplemental
-      for ( size_t i = 0; i < supplementalAlgSize; ++i )
-        supplementalAlg_[i]->elem_execute( &lhs[0], &rhs[0], elem, meSCS, meSCV);
+      //for ( size_t i = 0; i < supplementalAlgSize; ++i )
+      //  supplementalAlg_[i]->elem_execute( &lhs[0], &rhs[0], elem, meSCS, meSCV);
 
-      apply_coeff(connected_nodes, rhs, lhs, __FILE__);
-
+      apply_coeff(Kokkos::subview(connectedNodesScratch, 0, k, Kokkos::ALL()),
+          Kokkos::subview(rhsScratch, 0, k, Kokkos::ALL()),
+          Kokkos::subview(lhsScratch, 0, k, Kokkos::ALL()),
+          __FILE__);
     }
-
-    diffusionOperator->release_data();
-
   }
-
-  delete diffusionOperator;
-
 }
 
 } // namespace nalu
