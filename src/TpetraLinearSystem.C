@@ -1055,15 +1055,6 @@ TpetraLinearSystem::sumInto(
   const char *trace_tag
   )
 {
-  static int check = 0;
-  int kk = 0;
-  int sum = 0;
-  while(trace_tag[kk] != 0)
-    sum+=trace_tag[kk++];
-  if(check!=sum) {
-    printf("SUMINTO: %s\n",trace_tag);
-    check = sum;
-  }
   stk::mesh::BulkData & bulkData = realm_.bulk_data();
 
   const size_t n_obj = entities.size();
