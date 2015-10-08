@@ -90,7 +90,6 @@ AssembleElemSolverAlgorithm::execute()
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
   for (unsigned bucketOffset = 0; bucketOffset < elem_buckets.size(); bucketOffset += numWorkBuckets)
   {
-
     const int bucketEnd = std::min(bucketOffset + numWorkBuckets, (unsigned int)elem_buckets.size());
     Kokkos::parallel_for("Nalu::AssembleElemSolverAlgorithm::execute",
         Kokkos::TeamPolicy<Kokkos::Serial>(bucketEnd-bucketOffset, Kokkos::AUTO), [&] (const team_type& team) {

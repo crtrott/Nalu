@@ -26,6 +26,8 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
+#include <Kokkos_Core.hpp>
+
 namespace sierra{
 namespace nalu{
 
@@ -81,7 +83,7 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
   const int numWorkBuckets = 32;
   const int maxElementsPerBucket = 512;
   const int maxNodesPerElement = 8;
-  const int maxNumScsIp = 8;
+  const int maxNumScsIp = 16;
   const int lhsSize = maxNodesPerElement*maxNodesPerElement;
   const int rhsSize = maxNodesPerElement;
 //  Kokkos::View<double******> lhs("lhsScratch", numWorkBuckets, maxElementsPerBucket,
@@ -116,36 +118,43 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
 
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
-  for ( stk::mesh::BucketVector::const_iterator ib = elem_buckets.begin();
-        ib != elem_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
-    const stk::mesh::Bucket::size_type length   = b.size();
 
-    // extract master element
-    MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
+  typedef typename Kokkos::TeamPolicy<Kokkos::Serial>::member_type team_type;
+  for (unsigned bucketOffset = 0; bucketOffset < elem_buckets.size(); bucketOffset += numWorkBuckets)
+  {
+    const int bucketEnd = std::min(bucketOffset + numWorkBuckets, (unsigned int)elem_buckets.size());
+    Kokkos::parallel_for("Nalu::AssembleScalarElemDiffSolverAlgorithm::execute",
+        Kokkos::TeamPolicy<Kokkos::Serial>(bucketEnd-bucketOffset, Kokkos::AUTO), [&] (const team_type& team) {
+      const int ib = team.league_rank();
+      stk::mesh::Bucket & b = *elem_buckets[bucketOffset+ib];
+      const stk::mesh::Bucket::size_type length = b.size();
 
-    CVFEMScalarElemDiffusionFunctor diffusionOperator(bulk_data, meta_data,
-        scalarQNp1, *diffFluxCoeff_, *coordinates_, nDim, b, *meSCS,
-        Kokkos::subview(lhsScratch, 0, Kokkos::ALL(), Kokkos::ALL()),
-        Kokkos::subview(rhsScratch, 0, Kokkos::ALL(), Kokkos::ALL()),
-        Kokkos::subview(connectedNodesScratch, 0, Kokkos::ALL(), Kokkos::ALL()),
-        Kokkos::subview(shapeFunctionScratch, 0, Kokkos::ALL(), Kokkos::ALL())
-        );
+      // extract master element
+      MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
 
-    for ( size_t k = 0 ; k < length ; ++k ) {
-      diffusionOperator(k);
+      CVFEMScalarElemDiffusionFunctor diffusionOperator(bulk_data, meta_data,
+          scalarQNp1, *diffFluxCoeff_, *coordinates_, nDim, b, *meSCS,
+          Kokkos::subview(lhsScratch, ib, Kokkos::ALL(), Kokkos::ALL()),
+          Kokkos::subview(rhsScratch, ib, Kokkos::ALL(), Kokkos::ALL()),
+          Kokkos::subview(connectedNodesScratch, ib, Kokkos::ALL(), Kokkos::ALL()),
+          Kokkos::subview(shapeFunctionScratch, ib, Kokkos::ALL(), Kokkos::ALL())
+          );
 
-      // get elem
-      stk::mesh::Entity elem = b[k];
-      // call supplemental
-      //for ( size_t i = 0; i < supplementalAlgSize; ++i )
-      //  supplementalAlg_[i]->elem_execute( &lhs[0], &rhs[0], elem, meSCS, meSCV);
+      Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
+        diffusionOperator(k);
 
-      apply_coeff(Kokkos::subview(connectedNodesScratch, 0, k, Kokkos::ALL()),
-          Kokkos::subview(rhsScratch, 0, k, Kokkos::ALL()),
-          Kokkos::subview(lhsScratch, 0, k, Kokkos::ALL()),
-          __FILE__);
-    }
+        // get elem
+        stk::mesh::Entity elem = b[k];
+        // call supplemental
+        //for ( size_t i = 0; i < supplementalAlgSize; ++i )
+        //  supplementalAlg_[i]->elem_execute( &lhs[0], &rhs[0], elem, meSCS, meSCV);
+
+        apply_coeff(Kokkos::subview(connectedNodesScratch, ib, k, Kokkos::ALL()),
+            Kokkos::subview(rhsScratch, ib, k, Kokkos::ALL()),
+            Kokkos::subview(lhsScratch, ib, k, Kokkos::ALL()),
+            __FILE__);
+      });
+    });
   }
 }
 
