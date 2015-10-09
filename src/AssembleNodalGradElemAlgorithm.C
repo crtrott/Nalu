@@ -22,6 +22,8 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
+#include <Kokkos_Core.hpp>
+
 namespace sierra{
 namespace nalu{
 
@@ -29,9 +31,9 @@ struct nodalGradientElem{
 private:
 
   //Bucket and Element Data
-  stk::mesh::Bucket & b_;
+  const stk::mesh::Bucket & b_;
   MasterElement & meSCS_;
-  const double * p_shape_function_;
+  Kokkos::View<const double **, Kokkos::LayoutRight> shape_function_;
 
   //InputFields
   ScalarFieldType & scalarQ_;
@@ -48,14 +50,14 @@ private:
   const int nodesPerElement_;
 
 public:
-  nodalGradientElem(stk::mesh::Bucket & b, MasterElement & meSCS,
-      double * p_shape_function,
+  nodalGradientElem(const stk::mesh::Bucket & b, MasterElement & meSCS,
+      Kokkos::View<const double **, Kokkos::LayoutRight> p_shape_function,
       ScalarFieldType & scalarQ, VectorFieldType & dqdx,
       ScalarFieldType & dualNodalVolume, VectorFieldType & coordinates,
       int nDim):
       b_(b),
       meSCS_(meSCS),
-      p_shape_function_(p_shape_function),
+      shape_function_(p_shape_function),
       scalarQ_(scalarQ),
       dualNodalVolume_(dualNodalVolume),
       coordinates_(coordinates),
@@ -118,7 +120,7 @@ public:
       double qIp = 0.0;
       const int offSet = ip*nodesPerElement_;
       for ( int ic = 0; ic < nodesPerElement_; ++ic ) {
-        qIp += p_shape_function_[offSet+ic]*p_scalarQ[ic];
+        qIp += shape_function_(ip, ic) * p_scalarQ[ic];
       }
 
       // left and right volume
@@ -128,8 +130,8 @@ public:
       // assemble to il/ir
       for ( int j = 0; j < nDim_; ++j ) {
         double fac = qIp*p_scs_areav[ip*nDim_+j];
-        gradQL[j] += fac*inv_volL;
-        gradQR[j] -= fac*inv_volR;
+        Kokkos::atomic_add(&gradQL[j], fac*inv_volL);
+        Kokkos::atomic_sub(&gradQR[j], fac*inv_volR);
       }
     }
    }
@@ -172,7 +174,11 @@ AssembleNodalGradElemAlgorithm::execute()
   stk::mesh::MetaData & meta_data = realm_.meta_data();
 
   const int nDim = meta_data.spatial_dimension();
-  std::vector<double> ws_shape_function;
+  const int numWorkBuckets = 32;
+  const int maxNumScsIp = 12;
+  const int maxNodesPerElement = 8;
+  Kokkos::View<double ***, Kokkos::LayoutRight> ws_shape_function("wsShapeFcn",
+      numWorkBuckets, maxNumScsIp, maxNodesPerElement);
 
   // define some common selectors
   stk::mesh::Selector s_locally_owned_union = meta_data.locally_owned_part()
@@ -181,28 +187,35 @@ AssembleNodalGradElemAlgorithm::execute()
 
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
-  for ( stk::mesh::BucketVector::const_iterator ib = elem_buckets.begin();
-        ib != elem_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
-    const stk::mesh::Bucket::size_type length   = b.size();
 
-    // extract master element
-    MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
-    const int nodesPerElement = meSCS->nodesPerElement_;
-    const int numScsIp = meSCS->numIntPoints_;
-    ws_shape_function.resize(numScsIp*nodesPerElement);
-    double * p_shape_function = ws_shape_function.data();
-    if ( useShifted_ )
-      meSCS->shifted_shape_fcn(&p_shape_function[0]);
-    else
-      meSCS->shape_fcn(&p_shape_function[0]);
+  typedef typename Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>::member_type team_type;
 
-    nodalGradientElem nodeGradFunctor(b, *meSCS, p_shape_function, *scalarQ_, *dqdx_, *dualNodalVolume_, *coordinates_, nDim);
+  const int numBuckets = elem_buckets.size();
+  for(int bucketOffset = 0; bucketOffset < numBuckets; bucketOffset += numWorkBuckets)
+  {
+    const int bucketsThisPass = std::min(numWorkBuckets, numBuckets - bucketOffset);
+    Kokkos::parallel_for("Nalu::AssembleNodalGradElemAlgorithm::execute()",
+      Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>(bucketsThisPass, Kokkos::AUTO()), [&](team_type team) {
+        const int ib = team.league_rank();
+        const stk::mesh::Bucket & b = *elem_buckets[ib + bucketOffset];
+        const auto length = b.size();
 
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
-      //WARNING: do not thread this functor.  It is not thread-safe because each element scatters to all of its nodes.
-      nodeGradFunctor(k);
-    }
+        MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
+        const int nodesPerElement = meSCS->nodesPerElement_;
+        const int numScsIp = meSCS->numIntPoints_;
+        if ( useShifted_ )
+          meSCS->shifted_shape_fcn(&ws_shape_function(ib, 0, 0));
+        else
+          meSCS->shape_fcn(&ws_shape_function(ib, 0, 0));
+
+        auto bucket_shape_function = Kokkos::subview(ws_shape_function, ib, Kokkos::ALL(), Kokkos::ALL());
+        nodalGradientElem nodeGradFunctor(b, *meSCS, bucket_shape_function,
+            *scalarQ_, *dqdx_, *dualNodalVolume_, *coordinates_, nDim);
+
+        Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
+          nodeGradFunctor(k);
+        });
+    });
   }
 }
 
