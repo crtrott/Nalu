@@ -65,6 +65,8 @@ AssembleElemSolverAlgorithm::execute()
 {
   stk::mesh::MetaData & meta_data = realm_.meta_data();
 
+  if(supplementalAlg_.empty()) return;
+
   const int numWorkBuckets = 32;
   const int maxNodesPerElement = 8;
   const int maxElementsPerBucket = 512;
@@ -75,6 +77,7 @@ AssembleElemSolverAlgorithm::execute()
   Kokkos::View<double***, Kokkos::LayoutRight> lhsScratch("lhsScratch", numWorkBuckets, maxElementsPerBucket, lhsSize);
   Kokkos::View<double***, Kokkos::LayoutRight> rhsScratch("rhsScratch", numWorkBuckets, maxElementsPerBucket, rhsSize);
   Kokkos::View<stk::mesh::Entity***, Kokkos::LayoutRight> connectedNodesScratch("cnScratch", numWorkBuckets, maxElementsPerBucket, maxNodesPerElement);
+
 
   // supplemental algorithm size and setup
   const size_t supplementalAlgSize = supplementalAlg_.size();
