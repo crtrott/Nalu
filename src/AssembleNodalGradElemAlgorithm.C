@@ -69,29 +69,41 @@ public:
     lrscv = meSCS_.adjacentNodes();
   }
   void operator()(stk::mesh::Bucket::size_type elem_offset){
-    // get elem
-    //===============================================
-    // gather nodal data; this is how we do it now..
-    //===============================================
     stk::mesh::Entity const * node_rels = b_.begin_nodes(elem_offset);
     const int num_nodes = b_.num_nodes(elem_offset);
 
-    // temporary arrays
+    // temporary arrays to store gathered nodal field data.
+    // I don't know what the implications are of using these non-standard
+    // runtime sized arrays within a functor called in parallel are. Do
+    // they need to do a malloc call for each one? If so then these should
+    // probably be changed into scratch space Kokkos::View objects created by
+    // the algorithm that calls the functor and get passed in similar to
+    // shape_function_. Alternatively the functor could be templated on
+    // the number of nodes per element and dimensions etc and a different
+    // functor could be created depending on the element topology of each
+    // bucket and then these could remain as stack arrays.
     double p_scalarQ[nodesPerElement_];
     double p_dualVolume[nodesPerElement_];
     double p_coordinates[nodesPerElement_*nDim_];
     double p_scs_areav[numScsIp_*nDim_];
 
+    // Gather the required nodal field data into the temporary arrays.
+    // Because this is read only access we don't need to worry about
+    // atomics or anything here.
+    // If we had element field data that we needed then we could move the
+    // stk::mesh::field_data calls into the functor constructor and index into
+    // the field data directly here, but since we are iterating elements and need
+    // nodal field data here that isn't an option.
+    // Eventually the field data will all need to be stored in Kokkos::View's for
+    // us to run on GPUs.
     for ( int ni = 0; ni < num_nodes; ++ni ) {
       stk::mesh::Entity node = node_rels[ni];
 
       const double * coords = stk::mesh::field_data(coordinates_, node );
 
-      // gather scalars
       p_scalarQ[ni]    = *stk::mesh::field_data(scalarQ_, node);
       p_dualVolume[ni] = *stk::mesh::field_data(dualNodalVolume_, node);
 
-      // gather vectors
       const int offSet = ni*nDim_;
       for ( int j=0; j < nDim_; ++j ) {
         p_coordinates[offSet+j] = coords[j];
@@ -99,6 +111,8 @@ public:
     }
 
     // compute geometry
+    // This only writes to the p_scs_areav scratch space that is local to this
+    // function so we don't need to worry about race conditions there.
     double scs_error = 0.0;
     meSCS_.determinant(1, &p_coordinates[0], &p_scs_areav[0], &scs_error);
 
@@ -112,10 +126,6 @@ public:
       stk::mesh::Entity nodeL = node_rels[il];
       stk::mesh::Entity nodeR = node_rels[ir];
 
-      // pointer to fields to assemble
-      double *gradQL = stk::mesh::field_data(dqdx_, nodeL );
-      double *gradQR = stk::mesh::field_data(dqdx_, nodeR );
-
       // interpolate to scs point; operate on saved off ws_field
       double qIp = 0.0;
       const int offSet = ip*nodesPerElement_;
@@ -127,9 +137,17 @@ public:
       double inv_volL = 1.0/p_dualVolume[il];
       double inv_volR = 1.0/p_dualVolume[ir];
 
+      // pointer to fields to assemble
+      double *gradQL = stk::mesh::field_data(dqdx_, nodeL );
+      double *gradQR = stk::mesh::field_data(dqdx_, nodeR );
+
       // assemble to il/ir
       for ( int j = 0; j < nDim_; ++j ) {
         double fac = qIp*p_scs_areav[ip*nDim_+j];
+        // Here we have to do atomic add/sub because the nodes are connected
+        // to multiple elements and we are operating on the elements in parallel
+        // so multiple elements could be writing to the same nodal field data
+        // simultaneously. Without the atomics we would have a race condition.
         Kokkos::atomic_add(&gradQL[j], fac*inv_volL);
         Kokkos::atomic_sub(&gradQR[j], fac*inv_volR);
       }
@@ -177,6 +195,8 @@ AssembleNodalGradElemAlgorithm::execute()
   const int numWorkBuckets = 32;
   const int maxNumScsIp = 12;
   const int maxNodesPerElement = 8;
+  // Create a View for scratch space to store the shape function for each bucket
+  // that will potentially be operated on in parallel.
   Kokkos::View<double ***, Kokkos::LayoutRight> ws_shape_function("wsShapeFcn",
       numWorkBuckets, maxNumScsIp, maxNodesPerElement);
 
@@ -190,16 +210,27 @@ AssembleNodalGradElemAlgorithm::execute()
 
   typedef typename Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>::member_type team_type;
 
+  // Here we apply hierarchical parallelism. At the outer level we allow up to
+  // numWorkBuckets to be operated on in parallel. Each bucket will be operated
+  // on by a team of threads. The actual number of teams that will be run in parallel
+  // and number of threads in a team will be determined by Kokkos depending on the
+  // architecture and resources available at runtime.
   const int numBuckets = elem_buckets.size();
   for(int bucketOffset = 0; bucketOffset < numBuckets; bucketOffset += numWorkBuckets)
   {
     const int bucketsThisPass = std::min(numWorkBuckets, numBuckets - bucketOffset);
     Kokkos::parallel_for("Nalu::AssembleNodalGradElemAlgorithm::execute()",
       Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>(bucketsThisPass, Kokkos::AUTO()), [&](team_type team) {
+        // Everything between here and the next parallel_for will be executed by every thread
+        // in the team.
+
+        // Determine which bucket of elements this team is operating on.
         const int ib = team.league_rank();
         const stk::mesh::Bucket & b = *elem_buckets[ib + bucketOffset];
         const auto length = b.size();
 
+        // Populate the shape function scratch space for this bucket
+        // Maybe this should only be done by the 0th thread in the team?
         MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
         const int nodesPerElement = meSCS->nodesPerElement_;
         const int numScsIp = meSCS->numIntPoints_;
@@ -208,10 +239,15 @@ AssembleNodalGradElemAlgorithm::execute()
         else
           meSCS->shape_fcn(&ws_shape_function(ib, 0, 0));
 
+        // Create the functor that each thread in the team will run on the elements it
+        // is given to work on. Use a subview of the shape function scratch space that
+        // only provides the shape functions for this bucket to the functor.
         auto bucket_shape_function = Kokkos::subview(ws_shape_function, ib, Kokkos::ALL(), Kokkos::ALL());
         nodalGradientElem nodeGradFunctor(b, *meSCS, bucket_shape_function,
             *scalarQ_, *dqdx_, *dualNodalVolume_, *coordinates_, nDim);
 
+        // This is the second level of parallelism, every element within the bucket
+        // is potentially operated on in parallel by a single thread within the team.
         Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
           nodeGradFunctor(k);
         });
