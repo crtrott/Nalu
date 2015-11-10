@@ -74,9 +74,9 @@ public:
     )=0;
 
   virtual void sumInto(
-      const Kokkos::View<const stk::mesh::Entity*> & sym_meshobj,
-      const Kokkos::View<const double*> & rhs,
-      const Kokkos::View<const double*> & lhs,
+      const Kokkos::View<const stk::mesh::Entity*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & sym_meshobj,
+      const Kokkos::View<const double*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & rhs,
+      const Kokkos::View<const double*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & lhs,
       const char *trace_tag=0)
   {
 

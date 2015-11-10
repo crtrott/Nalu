@@ -147,10 +147,10 @@ AssembleElemSolverAlgorithm::execute()
         for ( size_t i = 0; i < supplementalAlgSize; ++i )
           supplementalAlg_[i]->elem_execute( p_lhs, p_rhs, element, meSCS, meSCV);
 
-        auto connected_nodes = Kokkos::subview(connectedNodesScratch,ib,k,Kokkos::ALL());
+        /*auto connected_nodes = Kokkos::subview(connectedNodesScratch,ib,k,Kokkos::ALL());
         auto rhs = Kokkos::subview(rhsScratch,ib,k,Kokkos::ALL());
         auto lhs = Kokkos::subview(lhsScratch,ib,k,Kokkos::ALL());
-        apply_coeff(connected_nodes, rhs, lhs, __FILE__);
+        apply_coeff(connected_nodes, rhs, lhs, __FILE__);*/
 
       });
     });
