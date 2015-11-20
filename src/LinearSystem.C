@@ -80,10 +80,10 @@ LinearSystem *LinearSystem::create(Realm& realm, const unsigned numDof, const st
   switch(solver->getType())
     {
     case PT_EPETRA:
-      return new EpetraLinearSystem(realm,
+      return nullptr /*new EpetraLinearSystem(realm,
                                     numDof,
                                     name,
-                                    solver);
+                                    solver)*/;
       break;
     case PT_TPETRA:
       return new TpetraLinearSystem(realm,

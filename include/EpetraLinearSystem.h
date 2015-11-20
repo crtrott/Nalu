@@ -5,6 +5,7 @@
 /*  directory structure                                                   */
 /*------------------------------------------------------------------------*/
 
+/*
 
 #ifndef EpetraLinearSystem_h
 #define EpetraLinearSystem_h
@@ -101,3 +102,4 @@ private:
 } // namespace Sierra
 
 #endif
+*/

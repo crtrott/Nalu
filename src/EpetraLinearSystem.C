@@ -5,6 +5,7 @@
 /*  directory structure                                                   */
 /*------------------------------------------------------------------------*/
 
+/*
 
 #include <EpetraLinearSystem.h>
 #include <ContactInfo.h>
@@ -402,7 +403,7 @@ EpetraLinearSystem::buildFaceElemToNodeGraph(const stk::mesh::PartVector & parts
 
 void
 EpetraLinearSystem::buildEdgeHaloNodeGraph(
-  const stk::mesh::PartVector &/*parts*/)
+  const stk::mesh::PartVector &)
 {
 
   beginLinearSystemConstruction();
@@ -457,14 +458,14 @@ EpetraLinearSystem::buildEdgeHaloNodeGraph(
 
 void
 EpetraLinearSystem::buildNonConformalNodeGraph(
-  const stk::mesh::PartVector &/*parts*/)
+  const stk::mesh::PartVector &)
 {
   throw std::runtime_error("EpetraLinearSystem can not be used with non conformal algorithm; activate tpetra");
 }
 
 void
 EpetraLinearSystem::buildOversetNodeGraph(
-  const stk::mesh::PartVector &/*parts*/)
+  const stk::mesh::PartVector &)
 {
   throw std::runtime_error("EpetraLinearSystem can not be used with overset algorithm; activate tpetra");
 }
@@ -920,3 +921,5 @@ EpetraLinearSystem::copy_epetra_to_stk(
 
 } // namespace nalu
 } // namespace Sierra
+
+*/

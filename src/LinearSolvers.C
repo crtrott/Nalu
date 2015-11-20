@@ -84,6 +84,7 @@ LinearSolvers::create_solver(
   if (iterE != solverEpetraConfig_.end()) {
     EpetraLinearSolverConfig *linearSolverConfig = (*iterE).second;
     foundE = true;
+    /*
     theSolver = new EpetraLinearSolver(solverName,
                                        linearSolverConfig,
                                        linearSolverConfig->aztec_options(),
@@ -91,6 +92,7 @@ LinearSolvers::create_solver(
                                        linearSolverConfig->use_ml(),
                                        linearSolverConfig->use_mueLu(),
                                        linearSolverConfig->ml_parameters(), this);
+                                       */
   }
   
   // check in tpetra map...

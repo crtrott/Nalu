@@ -56,7 +56,7 @@ namespace nalu{
 Simulation *LinearSolver::root() { return linearSolvers_->root(); }
 LinearSolvers *LinearSolver::parent() { return linearSolvers_; }
 
-EpetraLinearSolver::EpetraLinearSolver(
+/*EpetraLinearSolver::EpetraLinearSolver(
   std::string solverName,
   EpetraLinearSolverConfig *config,
   const int * options,
@@ -177,6 +177,7 @@ EpetraLinearSolver::solve(
 
   return status;
 }
+*/
 
 TpetraLinearSolver::TpetraLinearSolver(
   std::string solverName,

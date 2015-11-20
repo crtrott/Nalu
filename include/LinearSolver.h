@@ -82,6 +82,7 @@ class LinearSolver
   bool & reusePreconditioner() {return reusePreconditioner_;}
 };
 
+/*
 class EpetraLinearSolver : public LinearSolver
 {
   public:
@@ -136,6 +137,7 @@ class EpetraLinearSolver : public LinearSolver
 
     const Teuchos::RCP<Teuchos::ParameterList> mlParams_;
 };
+*/
 
 class TpetraLinearSolver : public LinearSolver
 {
