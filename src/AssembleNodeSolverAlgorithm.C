@@ -54,6 +54,10 @@ AssembleNodeSolverAlgorithm::initialize_connectivity()
 //--------------------------------------------------------------------------
 //-------- execute ---------------------------------------------------------
 //--------------------------------------------------------------------------
+using ExecutionSpace = Kokkos::DefaultExecutionSpace;
+using shmem_space = ExecutionSpace::scratch_memory_space;
+template <typename T>
+using TeamSharedView = Kokkos::View<T, Kokkos::LayoutRight, shmem_space, Kokkos::MemoryUnmanaged>;
 void
 AssembleNodeSolverAlgorithm::execute()
 {
@@ -62,13 +66,7 @@ AssembleNodeSolverAlgorithm::execute()
   // space for LHS/RHS
   const int lhsSize = sizeOfSystem_*sizeOfSystem_;
   const int rhsSize = sizeOfSystem_;
-  std::vector<double> lhs(lhsSize);
-  std::vector<double> rhs(rhsSize);
-  std::vector<stk::mesh::Entity> connected_nodes(1);
-
-  // pointers
-  double *p_lhs = &lhs[0];
-  double *p_rhs = &rhs[0];
+  const int connectedNodesSize = 1;
 
   // supplemental algorithm size and setup
   const size_t supplementalAlgSize = supplementalAlg_.size();
@@ -83,21 +81,35 @@ AssembleNodeSolverAlgorithm::execute()
 
   stk::mesh::BucketVector const& node_buckets =
     realm_.get_buckets( stk::topology::NODE_RANK, s_locally_owned_union );
+
+  using team_type = Kokkos::TeamPolicy<ExecutionSpace>::member_type;
+  const int bytes_per_team = 0;
+  const int bytes_per_thread = (lhsSize + rhsSize)*sizeof(double)
+    + connectedNodesSize*sizeof(stk::mesh::Entity);
+
+  Kokkos::TeamPolicy< ExecutionSpace > team_exec( node_buckets.size(), Kokkos::AUTO,
+      Kokkos::Experimental::TeamScratchRequest<shmem_space>(bytes_per_team, bytes_per_thread));
+
   Kokkos::parallel_for("Nalu::AssembleNodeSolver",
-    Kokkos::RangePolicy<Kokkos::Serial>(0, node_buckets.size()), [&] (const int& ib) {
+      team_exec, [&] (const team_type & team) {
+    const int ib = team.league_rank();
     const stk::mesh::Bucket & b = *node_buckets[ib];
     const stk::mesh::Bucket::size_type length   = b.size();
 
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
+    // TODO: Should be per-thread
+    TeamSharedView<double*> lhs(team.team_shmem(), lhsSize);
+    TeamSharedView<double*> rhs(team.team_shmem(), rhsSize);
+    TeamSharedView<stk::mesh::Entity*> connected_nodes(team.team_shmem(), 1);
 
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
       // get node
       stk::mesh::Entity node = b[k];
       connected_nodes[0] = node;
 
       for ( int i = 0; i < lhsSize; ++i )
-        p_lhs[i] = 0.0;
+        lhs[i] = 0.0;
       for ( int i = 0; i < rhsSize; ++i )
-        p_rhs[i] = 0.0;
+        rhs[i] = 0.0;
 
       // call supplemental
       for ( size_t i = 0; i < supplementalAlgSize; ++i )
@@ -105,7 +117,7 @@ AssembleNodeSolverAlgorithm::execute()
 
       apply_coeff(connected_nodes, rhs, lhs, __FILE__);
 
-    }
+    });
   });
 }
 
