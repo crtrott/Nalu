@@ -37,7 +37,7 @@
 #include <stk_topology/topology.hpp>
 
 // stk_util
-#include <stk_util/environment/CPUTime.hpp>
+#include <stk_util/environment/WallTime.hpp>
 
 namespace sierra{
 namespace nalu{
@@ -638,7 +638,7 @@ EquationSystems::register_initial_condition_fcn(
 void
 EquationSystems::initialize()
 {
-  double start_time = stk::cpu_time();
+  double start_time = stk::wall_time();
   EquationSystemVector::iterator ii;
   for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii ) {
     if ( realm_.get_activate_memory_diagnostic() ) {
@@ -647,7 +647,7 @@ EquationSystems::initialize()
     }
     (*ii)->initialize();
   }
-  double end_time = stk::cpu_time();
+  double end_time = stk::wall_time();
   realm_.timerInitializeEqs_ += (end_time-start_time);
 }
 
@@ -657,11 +657,11 @@ EquationSystems::initialize()
 void
 EquationSystems::reinitialize_linear_system()
 {
-  double start_time = stk::cpu_time();
+  double start_time = stk::wall_time();
   EquationSystemVector::iterator ii;
   for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->reinitialize_linear_system();
-  double end_time = stk::cpu_time();
+  double end_time = stk::wall_time();
   realm_.timerInitializeEqs_ += (end_time-start_time);
 }
 
@@ -671,7 +671,7 @@ EquationSystems::reinitialize_linear_system()
 void
 EquationSystems::post_adapt_work()
 {
-  double time = -stk::cpu_time();
+  double time = -stk::wall_time();
   EquationSystemVector::iterator ii;
   for( ii=equationSystemVector_.begin(); ii!=equationSystemVector_.end(); ++ii )
     (*ii)->post_adapt_work();
@@ -680,7 +680,7 @@ EquationSystems::post_adapt_work()
   realm_.evaluate_properties();
 
   // load all time to adapt
-  time += stk::cpu_time();
+  time += stk::wall_time();
   realm_.timerAdapt_ += time;
 }
 

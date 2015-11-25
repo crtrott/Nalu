@@ -34,7 +34,7 @@
 #include <stk_search/SearchMethod.hpp>
 
 // timing
-#include <stk_util/environment/CPUTime.hpp>
+#include <stk_util/environment/WallTime.hpp>
 
 namespace sierra{
 namespace nalu{
@@ -316,10 +316,10 @@ void
 Transfer::initialize_begin()
 {
   NaluEnv::self().naluOutputP0() << "PROCESSING Transfer::initialize_begin() for: " << name_ << std::endl;
-  double time = -stk::cpu_time();
+  double time = -stk::wall_time();
   allocate_stk_transfer();
   transfer_->coarse_search();
-  time += stk::cpu_time();
+  time += stk::wall_time();
   fromRealm_->timerTransferSearch_ += time;
 }
 //--------------------------------------------------------------------------

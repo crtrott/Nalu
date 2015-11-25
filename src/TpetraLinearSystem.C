@@ -26,7 +26,7 @@
 #include <overset/OversetInfo.h>
 
 #include <stk_util/parallel/Parallel.hpp>
-#include <stk_util/environment/CPUTime.hpp>
+#include <stk_util/environment/WallTime.hpp>
 
 #include <stk_util/parallel/ParallelReduce.hpp>
 #include <stk_mesh/base/BulkData.hpp>
@@ -1115,7 +1115,7 @@ TpetraLinearSystem::applyDirichletBCs(
   stk::mesh::MetaData & metaData = realm_.meta_data();
   stk::mesh::BulkData & bulkData = realm_.bulk_data();
 
-  double adbc_time = -stk::cpu_time();
+  double adbc_time = -stk::wall_time();
   const unsigned p_size = bulkData.parallel_size();
   (void)p_size;
 
@@ -1183,7 +1183,7 @@ TpetraLinearSystem::applyDirichletBCs(
       }
     }
   });
-  adbc_time += stk::cpu_time();
+  adbc_time += stk::wall_time();
 }
 
 void
@@ -1275,7 +1275,7 @@ TpetraLinearSystem::solve(
     writeToFile(this->name_.c_str(), false);
   }
 
-  double solve_time = -stk::cpu_time();
+  double solve_time = -stk::wall_time();
 
   int iters;
   double finalResidNorm;
@@ -1291,7 +1291,7 @@ TpetraLinearSystem::solve(
       iters,
       finalResidNorm);
 
-  solve_time += stk::cpu_time();
+  solve_time += stk::wall_time();
 
   if (linearSolver->getConfig()->getWriteMatrixFiles()) {
     writeSolutionToFile(this->name_.c_str());
@@ -1631,7 +1631,8 @@ TpetraLinearSystem::copy_tpetra_to_stk(
     realm_.get_buckets(stk::topology::NODE_RANK, selector);
 
   //KOKKOS: BucketLoop noparallel throw
-  Kokkos::parallel_for("Nalu::TpetraLinearSystem::CopyTpetraToSTK", Kokkos::RangePolicy<Kokkos::Serial>(0, buckets.size()), [&] (const int& ib) {
+  Kokkos::parallel_for("Nalu::TpetraLinearSystem::CopyTpetraToSTK",
+      Kokkos::RangePolicy<Kokkos::Serial>(0, buckets.size()), [&] (const int& ib) {
     const stk::mesh::Bucket & b = *buckets[ib];
 
     const unsigned fieldSize = field_bytes_per_entity(*stkField, b) / sizeof(double);

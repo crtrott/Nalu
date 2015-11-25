@@ -78,7 +78,7 @@
 
 // stk_util
 #include <stk_util/parallel/Parallel.hpp>
-#include <stk_util/environment/CPUTime.hpp>
+#include <stk_util/environment/WallTime.hpp>
 #include <stk_util/environment/perf_util.hpp>
 
 // stk_mesh/base/fem
@@ -1496,7 +1496,7 @@ Realm::pre_timestep_work()
     static stk::diag::Timer timerReInitLinSys_("ReInitLinSys", timerAdaptRealm_);
 
     stk::diag::TimeBlock tbTimerAdapt_(timerAdaptRealm_);
-    double time = -stk::cpu_time();
+    double time = -stk::wall_time();
     if ( process_adaptivity() ) {
 
 #if defined (NALU_USES_PERCEPT)
@@ -1592,7 +1592,7 @@ Realm::pre_timestep_work()
         }
 #endif
     }
-    time += stk::cpu_time();
+    time += stk::wall_time();
     timerAdapt_ += time;
   }
 
@@ -1642,12 +1642,12 @@ Realm::pre_timestep_work()
 void
 Realm::evaluate_properties()
 {
-  double start_time = stk::cpu_time();
+  double start_time = stk::wall_time();
   for ( size_t k = 0; k < propertyAlg_.size(); ++k ) {
     propertyAlg_[k]->execute();
   }
   equationSystems_.evaluate_properties();
-  double end_time = stk::cpu_time();
+  double end_time = stk::wall_time();
   timerPropertyEval_ += (end_time - start_time);
 }
 
@@ -1758,7 +1758,7 @@ Realm::commit()
 void
 Realm::create_mesh()
 {
-  double start_time = stk::cpu_time();
+  double start_time = stk::wall_time();
 
   stk::ParallelMachine pm = NaluEnv::self().parallel_comm();
   
@@ -1794,7 +1794,7 @@ Realm::create_mesh()
     edgesPart_ = &metaData_->declare_part("create_edges_part", stk::topology::EDGE_RANK);
   }
 
-  const double end_time = stk::cpu_time();
+  const double end_time = stk::wall_time();
 
   // set mesh reading
   timerReadMesh_ = (end_time - start_time);
@@ -1974,14 +1974,14 @@ Realm::create_edges()
   static stk::diag::Timer timerCE_("CreateEdges", Simulation::rootTimer());
   stk::diag::TimeBlock tbCreateEdges_(timerCE_);
 
-  double start_time = stk::cpu_time();
+  double start_time = stk::wall_time();
   if (solutionOptions_->useAdapter_ && solutionOptions_->maxRefinementLevel_ > 0 ) {
     stk::mesh::create_edges(*bulkData_, adapterSelector_[stk::topology::ELEMENT_RANK], edgesPart_);
   }
   else {
     stk::mesh::create_edges(*bulkData_, metaData_->universal_part(), edgesPart_);
   }
-  double stop_time = stk::cpu_time();
+  double stop_time = stk::wall_time();
 
   // timer close-out
   const double total_edge_time = stop_time - start_time;
@@ -3182,7 +3182,7 @@ Realm::provide_output()
     if (outputInfo_->outputFreq_ == 0)
       return;
 
-    const double start_time = stk::cpu_time();
+    const double start_time = stk::wall_time();
 
     // process output via io
     const double currentTime = get_current_time();
@@ -3199,7 +3199,7 @@ Realm::provide_output()
       equationSystems_.provide_output();
     }
 
-    const double stop_time = stk::cpu_time();
+    const double stop_time = stk::wall_time();
 
     // increment time for output
     timerOutputFields_ += (stop_time - start_time);
@@ -3219,7 +3219,7 @@ Realm::provide_restart_output()
     if (outputInfo_->restartFreq_ == 0)
       return;
 
-    const double start_time = stk::cpu_time();
+    const double start_time = stk::wall_time();
 
     // process restart via io
     const double currentTime = get_current_time();
@@ -3253,7 +3253,7 @@ Realm::provide_restart_output()
       ioBroker_->end_output_step(restartFileIndex_);
     }
 
-    const double stop_time = stk::cpu_time();
+    const double stop_time = stk::wall_time();
 
     // increment time for output
     timerOutputFields_ += (stop_time - start_time);

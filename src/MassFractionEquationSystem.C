@@ -64,7 +64,7 @@
 
 // stk_util
 #include <stk_util/parallel/ParallelReduce.hpp>
-#include <stk_util/environment/CPUTime.hpp>
+#include <stk_util/environment/WallTime.hpp>
 
 // basic c++
 #include <cmath>
@@ -722,9 +722,9 @@ MassFractionEquationSystem::solve_and_update()
     for ( int k = 0; k < nm1MassFraction; ++k ) {
 
       // load np1, n and nm1 mass fraction to "current"; also populate "current" bc
-      double timeA = stk::cpu_time();
+      double timeA = stk::wall_time();
       set_current_mass_fraction(k);
-      double timeB = stk::cpu_time();
+      double timeB = stk::wall_time();
       timerMisc_ += (timeB-timeA);
 
       // compute nodal gradient
@@ -734,14 +734,14 @@ MassFractionEquationSystem::solve_and_update()
       assemble_and_solve(yTmp_);
 
       // update
-      timeA = stk::cpu_time();
+      timeA = stk::wall_time();
       field_axpby(
         realm_.meta_data(),
         realm_.bulk_data(),
         1.0, *yTmp_,
         1.0, *currentMassFraction_, 
         realm_.get_activate_aura());
-      timeB = stk::cpu_time();
+      timeB = stk::wall_time();
       timerAssemble_ += (timeB-timeA);
 
       // copy currentMassFraction back to mass fraction_k

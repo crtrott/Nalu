@@ -63,7 +63,7 @@
 
 // stk_util
 #include <stk_util/parallel/Parallel.hpp>
-#include <stk_util/environment/CPUTime.hpp>
+#include <stk_util/environment/WallTime.hpp>
 
 // stk_mesh/base/fem
 #include <stk_mesh/base/BulkData.hpp>
@@ -926,20 +926,20 @@ EnthalpyEquationSystem::solve_and_update()
     assemble_and_solve(hTmp_);
 
     // update
-    double timeA = stk::cpu_time();
+    double timeA = stk::wall_time();
     field_axpby(
       realm_.meta_data(),
       realm_.bulk_data(),
       1.0, *hTmp_,
       1.0, enthalpy_->field_of_state(stk::mesh::StateNP1),
       realm_.get_activate_aura());
-    double timeB = stk::cpu_time();
+    double timeB = stk::wall_time();
     timerAssemble_ += (timeB-timeA);
 
     // projected nodal gradient
-    timeA = stk::cpu_time();
+    timeA = stk::wall_time();
     assembleNodalGradAlgDriver_->execute();
-    timeB = stk::cpu_time();
+    timeB = stk::wall_time();
     timerMisc_ += (timeB-timeA);
   }
 

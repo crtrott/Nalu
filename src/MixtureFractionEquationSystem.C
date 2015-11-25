@@ -55,7 +55,7 @@
 
 // stk_util
 #include <stk_util/parallel/Parallel.hpp>
-#include <stk_util/environment/CPUTime.hpp>
+#include <stk_util/environment/WallTime.hpp>
 
 // stk_mesh/base/fem
 #include <stk_mesh/base/BulkData.hpp>
@@ -832,7 +832,7 @@ MixtureFractionEquationSystem::solve_and_update()
     assemble_and_solve(zTmp_);
 
     // update
-    double timeA = stk::cpu_time();
+    double timeA = stk::wall_time();
     const bool doClip = true;
     if ( doClip ) {
       update_and_clip();
@@ -845,13 +845,13 @@ MixtureFractionEquationSystem::solve_and_update()
         1.0, mixFrac_->field_of_state(stk::mesh::StateNP1),
         realm_.get_activate_aura());
     }
-    double timeB = stk::cpu_time();
+    double timeB = stk::wall_time();
     timerAssemble_ += (timeB-timeA);
 
     // projected nodal gradient
-    timeA = stk::cpu_time();
+    timeA = stk::wall_time();
     assembleNodalGradAlgDriver_->execute();
-    timeB = stk::cpu_time();
+    timeB = stk::wall_time();
     timerMisc_ += (timeB-timeA);
 
   }

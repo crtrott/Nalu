@@ -23,7 +23,7 @@
 
 // stk_util
 #include <stk_util/parallel/ParallelReduce.hpp>
-#include <stk_util/environment/CPUTime.hpp>
+#include <stk_util/environment/WallTime.hpp>
 
 // vector and pair
 #include <vector>
@@ -70,7 +70,7 @@ void
 ContactManager::initialize()
 {
 
-  const double timeA = stk::cpu_time();
+  const double timeA = stk::wall_time();
 
   stk::mesh::BulkData & bulk_data = realm_.bulk_data();
  
@@ -109,7 +109,7 @@ ContactManager::initialize()
   }
   
   // end time
-  const double timeB = stk::cpu_time();
+  const double timeB = stk::wall_time();
   realm_.timerContact_ += (timeB-timeA);
 
 }

@@ -53,7 +53,7 @@
 
 // stk_util
 #include <stk_util/parallel/Parallel.hpp>
-#include <stk_util/environment/CPUTime.hpp>
+#include <stk_util/environment/WallTime.hpp>
 
 // stk_mesh/base/fem
 #include <stk_mesh/base/BulkData.hpp>
@@ -801,9 +801,9 @@ TurbKineticEnergyEquationSystem::solve_and_update()
     assemble_and_solve(kTmp_);
 
     // update
-    double timeA = stk::cpu_time();
+    double timeA = stk::wall_time();
     update_and_clip();
-    double timeB = stk::cpu_time();
+    double timeB = stk::wall_time();
     timerAssemble_ += (timeB-timeA);
 
     // projected nodal gradient
@@ -819,9 +819,9 @@ TurbKineticEnergyEquationSystem::solve_and_update()
 void
 TurbKineticEnergyEquationSystem::assemble_nodal_gradient()
 {
-  const double timeA = stk::cpu_time();
+  const double timeA = stk::wall_time();
   assembleNodalGradAlgDriver_->execute();
-  timerMisc_ += (stk::cpu_time() - timeA);
+  timerMisc_ += (stk::wall_time() - timeA);
 }
 
 //--------------------------------------------------------------------------
@@ -830,9 +830,9 @@ TurbKineticEnergyEquationSystem::assemble_nodal_gradient()
 void
 TurbKineticEnergyEquationSystem::compute_effective_diff_flux_coeff()
 {
-  const double timeA = stk::cpu_time();
+  const double timeA = stk::wall_time();
   diffFluxCoeffAlgDriver_->execute();
-  timerMisc_ += (stk::cpu_time() - timeA);
+  timerMisc_ += (stk::wall_time() - timeA);
 }
 
 //--------------------------------------------------------------------------
