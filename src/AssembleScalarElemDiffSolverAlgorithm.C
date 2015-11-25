@@ -84,13 +84,12 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
 
   const int nDim = meta_data.spatial_dimension();
 
-  const int numWorkBuckets = 32;
   const int maxElementsPerBucket = 512;
   const int maxNodesPerElement = 8;
   const int maxNumScsIp = 16;
   const int maxDim = 3;
-  const int lhsSize = maxNodesPerElement*maxNodesPerElement;
-  const int rhsSize = maxNodesPerElement;
+  const int maxlhsSize = maxNodesPerElement*maxNodesPerElement;
+  const int maxrhsSize = maxNodesPerElement;
 
   /*// supplemental algorithm setup
   const size_t supplementalAlgSize = supplementalAlg_.size();
@@ -126,7 +125,7 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
   // and if so consider the Aria approach where a separate algorithm is created per topology.
   const int bytes_per_thread = (maxNodesPerElement + maxNodesPerElement + maxNodesPerElement*maxDim
       + maxNumScsIp*maxDim + maxDim*maxNumScsIp*maxNodesPerElement * maxDim*maxNumScsIp*maxNodesPerElement
-      + maxNumScsIp + lhsSize + rhsSize)*sizeof(double)
+      + maxNumScsIp + maxlhsSize + maxrhsSize)*sizeof(double)
       + maxNodesPerElement * sizeof(stk::mesh::Entity);
 
   Kokkos::TeamPolicy< ExecutionSpace > team_exec( elem_buckets.size(), Kokkos::AUTO,
@@ -143,12 +142,14 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
       const int nDim_ = nDim;
       const int nodesPerElement_ = meSCS->nodesPerElement_;
       const int numScsIp = meSCS->numIntPoints_;
+      const int rhsSize = nodesPerElement_;
+      const int lhsSize = nodesPerElement_*nodesPerElement_;
 
-      TeamSharedView<double**> shape_function_(team.team_shmem(), maxNumScsIp, maxNodesPerElement);
+      TeamSharedView<double**> shape_function_(team.team_shmem(), numScsIp, nodesPerElement_);
 
       // TODO: These should be per-thread but declaring them in the per-thread parallel for causes
       // a segfault right now. For now leave them here since the CPU has 1 thread per team anyway.
-        TeamSharedView<stk::mesh::Entity*> connected_nodes_(team.team_shmem(), maxNodesPerElement);
+        TeamSharedView<stk::mesh::Entity*> connected_nodes_(team.team_shmem(), nodesPerElement_);
         TeamSharedView<double*> lhs_(team.team_shmem(), lhsSize);
         TeamSharedView<double*> rhs_(team.team_shmem(), rhsSize);
         TeamSharedView<double*> p_scalarQ(team.team_shmem(), nodesPerElement_);
@@ -159,6 +160,8 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
         TeamSharedView<double*> p_deriv(team.team_shmem(), nDim_*numScsIp*nodesPerElement_);
         TeamSharedView<double*> p_det_j(team.team_shmem(), numScsIp);
 
+      // TODO: What are the rules on calling virtual functions in parallel blocks?
+      // Does the object the virtual call is made on have to be in Device memory space?
       meSCS->shape_fcn(&shape_function_(0, 0));
       auto lrscv = meSCS->adjacentNodes();
       Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
@@ -167,9 +170,6 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
         // get nodes
         stk::mesh::Entity const * node_rels = bulk_data.begin_nodes(elem);
 
-        // temporary arrays
-        const int lhsSize = nodesPerElement_*nodesPerElement_;
-        const int rhsSize = nodesPerElement_;
         // zero lhs/rhs
         for ( int p = 0; p < lhsSize; ++p )
           lhs_(p) = 0.0;
