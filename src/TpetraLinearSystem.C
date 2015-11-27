@@ -21,6 +21,8 @@
 #include <master_element/MasterElement.h>
 #include <NaluEnv.h>
 
+#include <KokkosInterface.h>
+
 // overset
 #include <overset/OversetManager.h>
 #include <overset/OversetInfo.h>
@@ -114,7 +116,7 @@ struct CompareEntityById
   }
 };
 
-size_t TpetraLinearSystem::lookup_myLID(MyLIDMapType& myLIDs, stk::mesh::EntityId entityId, const std::string& msg, stk::mesh::Entity entity)
+size_t TpetraLinearSystem::lookup_myLID(MyLIDMapType& myLIDs, stk::mesh::EntityId entityId, const char * msg, stk::mesh::Entity entity)
 {
   return myLIDs[entityId];
 }
@@ -1007,6 +1009,7 @@ TpetraLinearSystem::sumInto(
 //  ThrowAssert(numRows == rhs.size());
 //  ThrowAssert(numRows*numRows == lhs.size());
 
+  // TODO: We should make this a SharedMemView or something?
   std::vector<LocalOrdinal> localIds(numRows);
   //KOKKOS: Nested Loop parallel
   //Kokkos::parallel_for("Nalu::TpetraLinearSystem::sumIntoA",
@@ -1630,28 +1633,28 @@ TpetraLinearSystem::copy_tpetra_to_stk(
   stk::mesh::BucketVector const& buckets =
     realm_.get_buckets(stk::topology::NODE_RANK, selector);
 
-  //KOKKOS: BucketLoop noparallel throw
+  auto team_policy = get_team_policy(buckets.size(), 0, 0);
   Kokkos::parallel_for("Nalu::TpetraLinearSystem::CopyTpetraToSTK",
-      Kokkos::RangePolicy<Kokkos::Serial>(0, buckets.size()), [&] (const int& ib) {
-    const stk::mesh::Bucket & b = *buckets[ib];
+      team_policy, [&] (const DeviceTeam & team) {
+    const stk::mesh::Bucket & b = *buckets[team.league_rank()];
 
     const unsigned fieldSize = field_bytes_per_entity(*stkField, b) / sizeof(double);
-    ThrowRequire(fieldSize == numDof_);
+    //ThrowRequire(fieldSize == numDof_);
 
     const stk::mesh::Bucket::size_type length = b.size();
     double * stkFieldPtr = (double*)stk::mesh::field_data(*stkField, *b.begin());
     const stk::mesh::EntityId *naluGlobalId = stk::mesh::field_data(*realm_.naluGlobalId_, *b.begin());
-    //KOKKOS: intra BucketLoop noparallel throw
-    for (stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
+
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&](const size_t k) {
       const LocalOrdinal localIdOffset = lookup_myLID(myLIDs_, naluGlobalId[k], "copy_tpetra_to_stk") * numDof_;
       stk::mesh::Entity node = b[k];
       stk::mesh::EntityId stkId = bulkData.identifier(node);
       stk::mesh::EntityId naluId = naluGlobalId[k];
       for(unsigned d=0; d < fieldSize; ++d) {
         const LocalOrdinal localId = localIdOffset + d;
-        bool useOwned = true;
+        //bool useOwned = true;
         LocalOrdinal actualLocalId = localId;
-        if(localId >= maxOwnedRowId_) {
+        /*if(localId >= maxOwnedRowId_) {
           actualLocalId = localId - maxOwnedRowId_;
           useOwned = false;
         }
@@ -1660,14 +1663,14 @@ TpetraLinearSystem::copy_tpetra_to_stk(
           std::cout << "P[" << p_rank << "] useOwned = " << useOwned << " localId = " << localId << " maxOwnedRowId_= " << maxOwnedRowId_ << " actualLocalId= " << actualLocalId
                     << " naluGlobalId= " << naluGlobalId[k] << " stkId= " << stkId << " naluId= " << naluId << std::endl;
         }
-        ThrowRequire(useOwned);
+        ThrowRequire(useOwned);*/
 
         const size_t stkIndex = k*numDof_ + d;
-        if (useOwned){
+        //if (useOwned){
           stkFieldPtr[stkIndex] = tpetraVector[localId];
-        }
+        //}
       }
-    }
+    });
   });
 }
 

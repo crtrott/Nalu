@@ -46,7 +46,6 @@
 
 #include <Teuchos_ParameterXMLFileReader.hpp>
 #include <MueLu_CreateTpetraPreconditioner.hpp>
-#include <MueLu_CreateEpetraPreconditioner.hpp>
 
 #include <iostream>
 
