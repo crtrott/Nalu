@@ -25,6 +25,8 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
+#include <KokkosInterface.h>
+
 namespace sierra{
 namespace nalu{
 
@@ -54,10 +56,6 @@ AssembleNodeSolverAlgorithm::initialize_connectivity()
 //--------------------------------------------------------------------------
 //-------- execute ---------------------------------------------------------
 //--------------------------------------------------------------------------
-using ExecutionSpace = Kokkos::DefaultExecutionSpace;
-using shmem_space = ExecutionSpace::scratch_memory_space;
-template <typename T>
-using TeamSharedView = Kokkos::View<T, Kokkos::LayoutRight, shmem_space, Kokkos::MemoryUnmanaged>;
 void
 AssembleNodeSolverAlgorithm::execute()
 {
@@ -82,24 +80,22 @@ AssembleNodeSolverAlgorithm::execute()
   stk::mesh::BucketVector const& node_buckets =
     realm_.get_buckets( stk::topology::NODE_RANK, s_locally_owned_union );
 
-  using team_type = Kokkos::TeamPolicy<ExecutionSpace>::member_type;
   const int bytes_per_team = 0;
   const int bytes_per_thread = (lhsSize + rhsSize)*sizeof(double)
     + connectedNodesSize*sizeof(stk::mesh::Entity);
 
-  Kokkos::TeamPolicy< ExecutionSpace > team_exec( node_buckets.size(), Kokkos::AUTO,
-      Kokkos::Experimental::TeamScratchRequest<shmem_space>(bytes_per_team, bytes_per_thread));
+  auto team_exec = get_team_policy(node_buckets.size(), bytes_per_team, bytes_per_thread);
 
   Kokkos::parallel_for("Nalu::AssembleNodeSolver",
-      team_exec, [&] (const team_type & team) {
+      team_exec, [&] (const DeviceTeam & team) {
     const int ib = team.league_rank();
     const stk::mesh::Bucket & b = *node_buckets[ib];
     const stk::mesh::Bucket::size_type length   = b.size();
 
     // TODO: Should be per-thread
-    TeamSharedView<double*> lhs(team.team_shmem(), lhsSize);
-    TeamSharedView<double*> rhs(team.team_shmem(), rhsSize);
-    TeamSharedView<stk::mesh::Entity*> connected_nodes(team.team_shmem(), 1);
+    SharedMemView<double*> lhs(team.team_shmem(), lhsSize);
+    SharedMemView<double*> rhs(team.team_shmem(), rhsSize);
+    SharedMemView<stk::mesh::Entity*> connected_nodes(team.team_shmem(), 1);
 
     Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
       // get node

@@ -26,7 +26,7 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
-#include <Kokkos_Core.hpp>
+#include <KokkosInterface.h>
 
 namespace sierra{
 namespace nalu{
@@ -68,10 +68,6 @@ AssembleScalarElemDiffSolverAlgorithm::initialize_connectivity()
   eqSystem_->linsys_->buildElemToNodeGraph(partVec_);
 }
 
-using ExecutionSpace = Kokkos::DefaultExecutionSpace;
-using shmem_space = ExecutionSpace::scratch_memory_space;
-template <typename T>
-using TeamSharedView = Kokkos::View<T, Kokkos::LayoutRight, shmem_space, Kokkos::MemoryUnmanaged>;
 //--------------------------------------------------------------------------
 //-------- execute ---------------------------------------------------------
 //--------------------------------------------------------------------------
@@ -117,8 +113,6 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
 
-  using team_type = Kokkos::TeamPolicy<ExecutionSpace>::member_type;
-
   const int bytes_per_team = maxNumScsIp * maxNodesPerElement * sizeof(double);
   // TODO: This may substantially overestimate the scratch space needed depending on what
   // element types are actually present. We should investigate whether the cost of this matters
@@ -126,13 +120,13 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
   const int bytes_per_thread = (maxNodesPerElement + maxNodesPerElement + maxNodesPerElement*maxDim
       + maxNumScsIp*maxDim + maxDim*maxNumScsIp*maxNodesPerElement * maxDim*maxNumScsIp*maxNodesPerElement
       + maxNumScsIp + maxlhsSize + maxrhsSize)*sizeof(double)
-      + maxNodesPerElement * sizeof(stk::mesh::Entity);
+      + maxNodesPerElement * sizeof(stk::mesh::Entity)
+      + maxrhsSize*sizeof(int); // For TpetraLinearSystem::sumInto vector of localIds
 
-  Kokkos::TeamPolicy< ExecutionSpace > team_exec( elem_buckets.size(), Kokkos::AUTO,
-      Kokkos::Experimental::TeamScratchRequest<shmem_space>(bytes_per_team, bytes_per_thread));
+  auto team_exec = get_team_policy(elem_buckets.size(), bytes_per_team, bytes_per_thread);
 
   Kokkos::parallel_for("Nalu::AssembleScalarElemDiffSolverAlgorithm::execute",
-      team_exec, [&] (const team_type & team) {
+      team_exec, [&] (const DeviceTeam & team) {
       const int ib = team.league_rank();
       stk::mesh::Bucket & b = *elem_buckets[ib];
       const stk::mesh::Bucket::size_type length = b.size();
@@ -145,20 +139,20 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
       const int rhsSize = nodesPerElement_;
       const int lhsSize = nodesPerElement_*nodesPerElement_;
 
-      TeamSharedView<double**> shape_function_(team.team_shmem(), numScsIp, nodesPerElement_);
+      SharedMemView<double**> shape_function_(team.team_shmem(), numScsIp, nodesPerElement_);
 
       // TODO: These should be per-thread but declaring them in the per-thread parallel for causes
       // a segfault right now. For now leave them here since the CPU has 1 thread per team anyway.
-        TeamSharedView<stk::mesh::Entity*> connected_nodes_(team.team_shmem(), nodesPerElement_);
-        TeamSharedView<double*> lhs_(team.team_shmem(), lhsSize);
-        TeamSharedView<double*> rhs_(team.team_shmem(), rhsSize);
-        TeamSharedView<double*> p_scalarQ(team.team_shmem(), nodesPerElement_);
-        TeamSharedView<double*> p_diffFluxCoeff(team.team_shmem(), nodesPerElement_);
-        TeamSharedView<double*> p_coordinates(team.team_shmem(), nodesPerElement_*nDim_);
-        TeamSharedView<double*> p_scs_areav(team.team_shmem(), numScsIp*nDim_);
-        TeamSharedView<double*> p_dndx(team.team_shmem(), nDim_*numScsIp*nodesPerElement_);
-        TeamSharedView<double*> p_deriv(team.team_shmem(), nDim_*numScsIp*nodesPerElement_);
-        TeamSharedView<double*> p_det_j(team.team_shmem(), numScsIp);
+        SharedMemView<stk::mesh::Entity*> connected_nodes_(team.team_shmem(), nodesPerElement_);
+        SharedMemView<double*> lhs_(team.team_shmem(), lhsSize);
+        SharedMemView<double*> rhs_(team.team_shmem(), rhsSize);
+        SharedMemView<double*> p_scalarQ(team.team_shmem(), nodesPerElement_);
+        SharedMemView<double*> p_diffFluxCoeff(team.team_shmem(), nodesPerElement_);
+        SharedMemView<double*> p_coordinates(team.team_shmem(), nodesPerElement_*nDim_);
+        SharedMemView<double*> p_scs_areav(team.team_shmem(), numScsIp*nDim_);
+        SharedMemView<double*> p_dndx(team.team_shmem(), nDim_*numScsIp*nodesPerElement_);
+        SharedMemView<double*> p_deriv(team.team_shmem(), nDim_*numScsIp*nodesPerElement_);
+        SharedMemView<double*> p_det_j(team.team_shmem(), numScsIp);
 
       // TODO: What are the rules on calling virtual functions in parallel blocks?
       // Does the object the virtual call is made on have to be in Device memory space?
