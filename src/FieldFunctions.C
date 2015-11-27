@@ -16,6 +16,8 @@
 #include <stk_mesh/base/Part.hpp>
 #include <stk_mesh/base/Field.hpp>
 
+#include <KokkosInterface.h>
+
 #include <algorithm>
 
 namespace sierra {
@@ -42,18 +44,19 @@ void field_axpby(
  
   stk::mesh::BucketVector const& buckets = bulkData.get_buckets( entityRankValue, selector );
 
-  for(size_t i=0; i < buckets.size(); ++i) {
-    stk::mesh::Bucket & b = *buckets[i];
+  auto team_policy = get_team_policy(buckets.size(), 0, 0);
+  Kokkos::parallel_for("Nalu::field_axpby", team_policy,
+      [&] (const DeviceTeam & team) {
+    stk::mesh::Bucket & b = *buckets[team.league_rank()];
     const stk::mesh::Bucket::size_type length = b.size();
     const size_t fieldSize = field_bytes_per_entity(xField, b) / sizeof(double);
-    ThrowAssert(fieldSize == field_bytes_per_entity(yField, b) / sizeof(double));
     const unsigned kmax = length * fieldSize;
     const double * x = (double*)stk::mesh::field_data(xField, b);
     double * y = (double*)stk::mesh::field_data(yField, b);
-    for(unsigned k = 0 ; k < kmax ; ++k) {
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, kmax), [&](const size_t k) {
       y[k] = alpha * x[k] + beta*y[k];
-    }
-  }
+    });
+  });
 }
 
 void field_fill(
@@ -73,14 +76,18 @@ void field_fill(
 
   stk::mesh::BucketVector const& buckets = bulkData.get_buckets( entityRankValue, selector );
 
-  for(size_t i=0; i < buckets.size(); ++i) {
-    stk::mesh::Bucket & b = *buckets[i];
+  auto team_policy = get_team_policy(buckets.size(), 0, 0);
+  Kokkos::parallel_for("Nalu::field_fill", team_policy,
+      [&] (const DeviceTeam & team) {
+    stk::mesh::Bucket & b = *buckets[team.league_rank()];
     const stk::mesh::Bucket::size_type length = b.size();
     const unsigned fieldSize = field_bytes_per_entity(xField, b) / sizeof(double);
     const unsigned kmax = length * fieldSize;
     double * x = (double*)stk::mesh::field_data(xField, b);
-    std::fill(x, x + kmax, alpha);
-  }
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, kmax), [&](const size_t k) {
+      x[k] = alpha;
+    });
+  });
 }
 
 void field_scale(
@@ -100,16 +107,18 @@ void field_scale(
 
   stk::mesh::BucketVector const& buckets = bulkData.get_buckets( entityRankValue, selector );
 
-  for(size_t i=0; i < buckets.size(); ++i) {
-    stk::mesh::Bucket & b = *buckets[i];
+  auto team_policy = get_team_policy(buckets.size(), 0, 0);
+  Kokkos::parallel_for("Nalu::field_scale", team_policy,
+      [&] (const DeviceTeam & team) {
+    stk::mesh::Bucket & b = *buckets[team.league_rank()];
     const stk::mesh::Bucket::size_type length = b.size();
     const unsigned fieldSize = field_bytes_per_entity(xField, b) / sizeof(double);
     const unsigned kmax = length * fieldSize;
     double * x = (double*)stk::mesh::field_data(xField, b);
-    for(unsigned k = 0 ; k < kmax ; ++k) {
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, kmax), [&](const size_t k) {
       x[k] = alpha * x[k];
-    }
-  }
+    });
+  });
 }
 
 void field_copy(
@@ -131,18 +140,19 @@ void field_copy(
 
   stk::mesh::BucketVector const& buckets = bulkData.get_buckets( entityRankValue, selector );
 
-  for(size_t i=0; i < buckets.size(); ++i) {
-    stk::mesh::Bucket & b = *buckets[i];
+  auto team_policy = get_team_policy(buckets.size(), 0, 0);
+  Kokkos::parallel_for("Nalu::field_copy", team_policy,
+      [&] (const DeviceTeam & team) {
+    stk::mesh::Bucket & b = *buckets[team.league_rank()];
     const stk::mesh::Bucket::size_type length = b.size();
     const size_t fieldSize = field_bytes_per_entity(xField, b) / sizeof(double);
-    ThrowAssert(fieldSize == field_bytes_per_entity(yField, b) / sizeof(double));
     const unsigned kmax = length * fieldSize;
     const double * x = (double*)stk::mesh::field_data(xField, b);
     double * y = (double*)stk::mesh::field_data(yField, b);
-    for(unsigned k = 0 ; k < kmax ; ++k) {
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, kmax), [&](const size_t k) {
       y[k] = x[k];
-    }
-  }
+    });
+  });
 
 }
 
@@ -167,17 +177,19 @@ void field_index_copy(
 
   stk::mesh::BucketVector const& buckets = bulkData.get_buckets( entityRankValue, selector );
 
-  for(size_t i=0; i < buckets.size(); ++i) {
-    stk::mesh::Bucket & b = *buckets[i];
+  auto team_policy = get_team_policy(buckets.size(), 0, 0);
+  Kokkos::parallel_for("Nalu::field_index_copy", team_policy,
+      [&] (const DeviceTeam & team) {
+    stk::mesh::Bucket & b = *buckets[team.league_rank()];
     const stk::mesh::Bucket::size_type length = b.size();
     const size_t xFieldSize = field_bytes_per_entity(xField, b) / sizeof(double);
     const size_t yFieldSize = field_bytes_per_entity(yField, b) / sizeof(double);
     const double * x = (double*)stk::mesh::field_data(xField, b);
     double * y = (double*)stk::mesh::field_data(yField, b);
-    for(unsigned k = 0 ; k < length ; ++k) {
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&](const size_t k) {
       y[k*yFieldSize+yFieldIndex] = x[k*xFieldSize+xFieldIndex];
-    }
-  }
+    });
+  });
 
 }
 
