@@ -23,8 +23,8 @@ LinearSolvers::~LinearSolvers()
 {
   for(SolverMap::const_iterator pos=solvers_.begin(); pos!=solvers_.end(); ++pos)
     delete pos->second;
-  for(SolverEpetraConfigMap::const_iterator pos=solverEpetraConfig_.begin(); pos!=solverEpetraConfig_.end(); ++pos)
-    delete pos->second;
+  //for(SolverEpetraConfigMap::const_iterator pos=solverEpetraConfig_.begin(); pos!=solverEpetraConfig_.end(); ++pos)
+    //delete pos->second;
   for(SolverTpetraConfigMap::const_iterator pos=solverTpetraConfig_.begin(); pos!=solverTpetraConfig_.end(); ++pos)
     delete pos->second;
 }
@@ -49,9 +49,9 @@ LinearSolvers::load(const YAML::Node & node)
       }
       if (solver_type == "epetra")
       {
-        EpetraLinearSolverConfig * linearSolverConfig = new EpetraLinearSolverConfig();
+        /*EpetraLinearSolverConfig * linearSolverConfig = new EpetraLinearSolverConfig();
         linearSolverConfig->load(linear_solver_node);
-        solverEpetraConfig_[linearSolverConfig->name()] = linearSolverConfig;
+        solverEpetraConfig_[linearSolverConfig->name()] = linearSolverConfig;*/
       }
       else if (solver_type == "tpetra")
       {
@@ -79,12 +79,12 @@ LinearSolvers::create_solver(
   LinearSolver *theSolver = NULL;
   // check in epetra map...
   bool foundE = false;
+  /*
   SolverEpetraConfigMap::const_iterator iterE
     = solverEpetraConfig_.find(solverBlockName);
   if (iterE != solverEpetraConfig_.end()) {
     EpetraLinearSolverConfig *linearSolverConfig = (*iterE).second;
     foundE = true;
-    /*
     theSolver = new EpetraLinearSolver(solverName,
                                        linearSolverConfig,
                                        linearSolverConfig->aztec_options(),
@@ -92,8 +92,8 @@ LinearSolvers::create_solver(
                                        linearSolverConfig->use_ml(),
                                        linearSolverConfig->use_mueLu(),
                                        linearSolverConfig->ml_parameters(), this);
-                                       */
   }
+  */
   
   // check in tpetra map...
   bool foundT = false;

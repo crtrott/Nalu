@@ -10,7 +10,7 @@
 #define LinearSolverConfig_h
 
 #include <string>
-#include <AztecOO.h>
+//#include <AztecOO.h>
 #include <Teuchos_ParameterList.hpp>
 #include <Teuchos_RCP.hpp>
 
@@ -21,6 +21,7 @@ class Node;
 namespace sierra{
 namespace nalu{
 
+/*
 class EpetraLinearSolverConfig {
   public:
     EpetraLinearSolverConfig();
@@ -57,7 +58,7 @@ class EpetraLinearSolverConfig {
 
     bool recomputePreconditioner_;
     bool reusePreconditioner_;
-};
+};*/
 
 class TpetraLinearSolverConfig {
   public:

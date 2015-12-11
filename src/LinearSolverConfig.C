@@ -12,7 +12,7 @@
 #include <yaml-cpp/yaml.h>
 #include <Teuchos_ParameterList.hpp>
 #include <Teuchos_RCP.hpp>
-#include <ml_MultiLevelPreconditioner.h>
+//#include <ml_MultiLevelPreconditioner.h>
 #include <BelosTypes.hpp>
 
 #include <ostream>
@@ -20,6 +20,7 @@
 namespace sierra{
 namespace nalu{
 
+/*
 EpetraLinearSolverConfig::EpetraLinearSolverConfig() :
   useML_(false),
   useMueLu_(false),
@@ -214,6 +215,7 @@ EpetraLinearSolverConfig::string_to_AzSubdomainSolver(const std::string & solver
   if(solver == "bilu_ifp")     return AZ_bilu_ifp;
   throw std::runtime_error("invalid linear subdomain solver specified ");
 }
+*/
 
 TpetraLinearSolverConfig::TpetraLinearSolverConfig() :
   params_(Teuchos::rcp(new Teuchos::ParameterList)),

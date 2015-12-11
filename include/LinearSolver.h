@@ -11,7 +11,7 @@
 
 #include <LinearSolverTypes.h>
 #include <LinearSolverConfig.h>
-#include <ml_MultiLevelPreconditioner.h>
+//#include <ml_MultiLevelPreconditioner.h>
 
 #include <LinearSolverTypes.h>
 
@@ -22,7 +22,7 @@
 #include <Teuchos_GlobalMPISession.hpp>
 #include <Teuchos_oblackholestream.hpp>
 
-#include <MueLu_EpetraOperator.hpp>
+//#include <MueLu_EpetraOperator.hpp>
 
 
 #include <Ifpack2_Factory.hpp>
