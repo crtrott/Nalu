@@ -64,11 +64,13 @@ SolverAlgorithm::apply_coeff(
 */
 void
 SolverAlgorithm::apply_coeff(
-  const Kokkos::View<const stk::mesh::Entity*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & sym_meshobj,
-  const Kokkos::View<const double*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & rhs,
-  const Kokkos::View<const double*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & lhs, const char *trace_tag)
+    const SharedMemView<const stk::mesh::Entity*> & entities,
+    const SharedMemView<const double*> & rhs,
+    const SharedMemView<const double*> & lhs,
+    const SharedMemView<int*> & localIds,
+    const char *trace_tag)
 {
-  eqSystem_->linsys_->sumInto(sym_meshobj, rhs, lhs, trace_tag);
+  eqSystem_->linsys_->sumInto(entities, rhs, lhs, localIds, trace_tag);
 }
 
 } // namespace nalu

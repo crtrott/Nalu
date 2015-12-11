@@ -996,25 +996,21 @@ TpetraLinearSystem::zeroSystem()
 
 void
 TpetraLinearSystem::sumInto(
-    const Kokkos::View<const stk::mesh::Entity*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & entities,
-    const Kokkos::View<const double*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & rhs,
-    const Kokkos::View<const double*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & lhs,
-    const char *trace_tag)
+      const SharedMemView<const stk::mesh::Entity*> & entities,
+      const SharedMemView<const double*> & rhs,
+      const SharedMemView<const double*> & lhs,
+      const SharedMemView<int*> & localIds,
+      const char * trace_tag)
 {
   stk::mesh::BulkData & bulkData = realm_.bulk_data();
 
-  const size_t n_obj = entities.dimension_0();
-  const size_t numRows = n_obj * numDof_;
+  const int n_obj = entities.dimension_0();
+  const int numRows = n_obj * numDof_;
 
 //  ThrowAssert(numRows == rhs.size());
 //  ThrowAssert(numRows*numRows == lhs.size());
 
-  // TODO: We should make this a SharedMemView or something?
-  std::vector<LocalOrdinal> localIds(numRows);
-  //KOKKOS: Nested Loop parallel
-  //Kokkos::parallel_for("Nalu::TpetraLinearSystem::sumIntoA",
-  //  Kokkos::RangePolicy<Kokkos::Serial>(0,n_obj), [&] (const size_t& i) {
-  for(size_t i = 0; i < n_obj; i++) {
+  for(int i = 0; i < n_obj; i++) {
     const stk::mesh::Entity entity = entities(i);
     const stk::mesh::EntityId entityId = bulkData.identifier(entity);
     (void)entityId;
@@ -1025,24 +1021,24 @@ TpetraLinearSystem::sumInto(
       localIds[lid] = localOffset + d;
     }
   }
-  std::vector<double> vals(numRows);
-  //KOKKOS: Loop noparallel Matrix Vector sumIntoLocalValues
-  //Kokkos::parallel_for("Nalu::TpetraLinearSystem::sumIntoB",
-  //  Kokkos::RangePolicy<Kokkos::Serial>(0,numRows), [&] (const size_t& r) {
-  for(size_t r = 0; r < numRows; r++) {
+
+  for(int r = 0; r < numRows; r++) {
     const LocalOrdinal localId = localIds[r];
 
-    //KOKKOS: nested Loop parallel
-    for(size_t c=0; c < numRows; ++c) // numRows == numCols
-      vals[c] = lhs(r*numRows + c);
-
     if(localId < maxOwnedRowId_) {
-      ownedMatrix_->sumIntoLocalValues(localId, localIds, vals);
+      // TODO: If I try to use the View's that are ppased in directly I get template
+      // argument deduction errors for reasons I don't understand. Need to ask Mark.
+      ownedMatrix_->sumIntoLocalValues(localId,
+          Teuchos::ArrayView<const int>{&localIds[0], numRows},
+          Teuchos::ArrayView<const double>{&lhs[numRows*r], numRows});
       ownedRhs_->sumIntoLocalValue(localId, rhs(r));
     }
     else if(localId < maxGloballyOwnedRowId_) {
       const LocalOrdinal actualLocalId = localId - maxOwnedRowId_;
-      globallyOwnedMatrix_->sumIntoLocalValues(actualLocalId, localIds, vals);
+      globallyOwnedMatrix_->sumIntoLocalValues(actualLocalId,
+          Teuchos::ArrayView<const int>{&localIds[0], numRows},
+          Teuchos::ArrayView<const double>{&lhs[numRows*r], numRows});
+          //Kokkos::subview(lhs, r, Kokkos::ALL()));
       globallyOwnedRhs_->sumIntoLocalValue(actualLocalId, rhs(r));
     }
   }

@@ -153,6 +153,7 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
         SharedMemView<double*> p_dndx(team.team_shmem(), nDim_*numScsIp*nodesPerElement_);
         SharedMemView<double*> p_deriv(team.team_shmem(), nDim_*numScsIp*nodesPerElement_);
         SharedMemView<double*> p_det_j(team.team_shmem(), numScsIp);
+        SharedMemView<int*> localIdsScratch(team.team_shmem(), nodesPerElement_);
 
       // TODO: What are the rules on calling virtual functions in parallel blocks?
       // Does the object the virtual call is made on have to be in Device memory space?
@@ -240,7 +241,7 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
         //for ( size_t i = 0; i < supplementalAlgSize; ++i )
         //  supplementalAlg_[i]->elem_execute( &lhs[0], &rhs[0], elem, meSCS, meSCV);
 
-        apply_coeff(connected_nodes_, rhs_, lhs_, __FILE__);
+        apply_coeff(connected_nodes_, rhs_, lhs_, localIdsScratch, __FILE__);
       });
     });
 }

@@ -20,7 +20,7 @@
 #include <vector>
 #include <string>
 
-#include <Kokkos_Core.hpp>
+#include <KokkosInterface.h>
 
 #include <stk_mesh/base/Entity.hpp>
 
@@ -74,9 +74,10 @@ public:
     )=0;
 
   virtual void sumInto(
-      const Kokkos::View<const stk::mesh::Entity*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & sym_meshobj,
-      const Kokkos::View<const double*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & rhs,
-      const Kokkos::View<const double*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & lhs,
+      const SharedMemView<const stk::mesh::Entity*> & entities,
+      const SharedMemView<const double*> & rhs,
+      const SharedMemView<const double*> & lhs,
+      const SharedMemView<int*> & local_id_scratch,
       const char *trace_tag=0)
   {
 

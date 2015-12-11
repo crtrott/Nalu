@@ -11,6 +11,8 @@
 
 #include <LinearSystem.h>
 
+#include <KokkosInterface.h>
+
 #include <Tpetra_DefaultPlatform.hpp>
 #include <Kokkos_DefaultNode.hpp>
 #include <Tpetra_Vector.hpp>
@@ -73,9 +75,10 @@ public:
     );
 
   virtual void sumInto(
-      const Kokkos::View<const stk::mesh::Entity*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & entities,
-      const Kokkos::View<const double*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & rhs,
-      const Kokkos::View<const double*, Kokkos::DefaultExecutionSpace::scratch_memory_space, Kokkos::MemoryUnmanaged> & lhs,
+      const SharedMemView<const stk::mesh::Entity*> & entities,
+      const SharedMemView<const double*> & rhs,
+      const SharedMemView<const double*> & lhs,
+      const SharedMemView<int*> & local_id_scratch,
       const char *trace_tag=0);
 
   void applyDirichletBCs(

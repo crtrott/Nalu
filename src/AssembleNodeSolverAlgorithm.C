@@ -64,7 +64,6 @@ AssembleNodeSolverAlgorithm::execute()
   // space for LHS/RHS
   const int lhsSize = sizeOfSystem_*sizeOfSystem_;
   const int rhsSize = sizeOfSystem_;
-  const int connectedNodesSize = 1;
 
   // supplemental algorithm size and setup
   const size_t supplementalAlgSize = supplementalAlg_.size();
@@ -82,7 +81,10 @@ AssembleNodeSolverAlgorithm::execute()
 
   const int bytes_per_team = 0;
   const int bytes_per_thread = (lhsSize + rhsSize)*sizeof(double)
-    + connectedNodesSize*sizeof(stk::mesh::Entity);
+    + sizeof(stk::mesh::Entity) // connected nodes
+    + 2*sizeof(int); // local ID scratch,
+  // For some reason using just sizeof(int) causes the localIDsScratch pointer to be NULL.
+  // Maybe there is some alignment requirement forcing the need for additional space?
 
   auto team_exec = get_team_policy(node_buckets.size(), bytes_per_team, bytes_per_thread);
 
@@ -96,6 +98,7 @@ AssembleNodeSolverAlgorithm::execute()
     SharedMemView<double*> lhs(team.team_shmem(), lhsSize);
     SharedMemView<double*> rhs(team.team_shmem(), rhsSize);
     SharedMemView<stk::mesh::Entity*> connected_nodes(team.team_shmem(), 1);
+    SharedMemView<int*> localIdsScratch(team.team_shmem(), 1);
 
     Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
       // get node
@@ -111,7 +114,7 @@ AssembleNodeSolverAlgorithm::execute()
       for ( size_t i = 0; i < supplementalAlgSize; ++i )
         supplementalAlg_[i]->node_execute( &lhs[0], &rhs[0], node);
 
-      apply_coeff(connected_nodes, rhs, lhs, __FILE__);
+      apply_coeff(connected_nodes, rhs, lhs, localIdsScratch, __FILE__);
 
     });
   });
