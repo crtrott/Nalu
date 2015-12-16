@@ -1028,13 +1028,13 @@ TpetraLinearSystem::sumInto(
     if(localId < maxOwnedRowId_) {
       // TODO: If I try to use the View's that are ppased in directly I get template
       // argument deduction errors for reasons I don't understand. Need to ask Mark.
-      ownedMatrix_->template sumIntoLocalValues<SharedMemView<int*>, SharedMemView<const double*> >
+      ownedMatrix_->sumIntoLocalValues<SharedMemView<int*>, SharedMemView<const double*> >
          (localId,localIds,Kokkos::subview(lhs,std::pair<int,int>(numRows*r,numRows*(r+1))));
       ownedRhs_->sumIntoLocalValue(localId, rhs(r));
     }
     else if(localId < maxGloballyOwnedRowId_) {
       const LocalOrdinal actualLocalId = localId - maxOwnedRowId_;
-      globallyOwnedMatrix_->template sumIntoLocalValues<SharedMemView<int*>,SharedMemView<const double*> >
+      globallyOwnedMatrix_->sumIntoLocalValues<SharedMemView<int*>,SharedMemView<const double*> >
          (actualLocalId,localIds,Kokkos::subview(lhs,std::pair<int,int>(numRows*r,numRows*(r+1))));
       globallyOwnedRhs_->sumIntoLocalValue(actualLocalId, rhs(r));
     }
