@@ -98,11 +98,24 @@ AssembleScalarEdgeDiffSolverAlgorithm::execute()
     stk::mesh::Bucket & b = *edge_buckets[ib];
     const stk::mesh::Bucket::size_type length   = b.size();
 
-    // TODO: Should be per-thread
-    SharedMemView<double*> lhs(team.team_shmem(), lhsSize);
-    SharedMemView<double*> rhs(team.team_shmem(), rhsSize);
-    SharedMemView<stk::mesh::Entity*> connected_nodes(team.team_shmem(), nodesPerEdge);
-    SharedMemView<int*> localIdsScratch(team.team_shmem(), nodesPerEdge);
+    SharedMemView<double*> lhs;
+    SharedMemView<double*> rhs;
+    SharedMemView<stk::mesh::Entity*> connected_nodes;
+    SharedMemView<int*> localIdsScratch;
+    {
+      lhs = Kokkos::subview(
+          SharedMemView<double**> (team.team_shmem(), team.team_size(), lhsSize),
+          team.team_rank(), Kokkos::ALL());
+      rhs = Kokkos::subview(
+          SharedMemView<double**> (team.team_shmem(), team.team_size(), rhsSize),
+          team.team_rank(), Kokkos::ALL());
+      connected_nodes = Kokkos::subview(
+          SharedMemView<stk::mesh::Entity**> (team.team_shmem(), team.team_size(), nodesPerEdge),
+          team.team_rank(), Kokkos::ALL());
+      localIdsScratch = Kokkos::subview(
+          SharedMemView<int**> (team.team_shmem(), team.team_size(), nodesPerEdge),
+          team.team_rank(), Kokkos::ALL());
+    }
 
     // pointer to edge area vector and mdot
     Kokkos::View<double**, Kokkos::LayoutRight, Kokkos::MemoryUnmanaged>

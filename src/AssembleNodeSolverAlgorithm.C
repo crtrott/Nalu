@@ -95,11 +95,24 @@ AssembleNodeSolverAlgorithm::execute()
     const stk::mesh::Bucket & b = *node_buckets[ib];
     const stk::mesh::Bucket::size_type length   = b.size();
 
-    // TODO: Should be per-thread
-    SharedMemView<double*> lhs(team.team_shmem(), lhsSize);
-    SharedMemView<double*> rhs(team.team_shmem(), rhsSize);
-    SharedMemView<stk::mesh::Entity*> connected_nodes(team.team_shmem(), 1);
-    SharedMemView<int*> localIdsScratch(team.team_shmem(), 1);
+    SharedMemView<double*> lhs;
+    SharedMemView<double*> rhs;
+    SharedMemView<stk::mesh::Entity*> connected_nodes;
+    SharedMemView<int*> localIdsScratch;
+    {
+      lhs = Kokkos::subview(
+          SharedMemView<double**> (team.team_shmem(), team.team_size(), lhsSize),
+          team.team_rank(), Kokkos::ALL());
+      rhs = Kokkos::subview(
+          SharedMemView<double**> (team.team_shmem(), team.team_size(), rhsSize),
+          team.team_rank(), Kokkos::ALL());
+      connected_nodes = Kokkos::subview(
+          SharedMemView<stk::mesh::Entity**> (team.team_shmem(), team.team_size(), 1),
+          team.team_rank(), Kokkos::ALL());
+      localIdsScratch = Kokkos::subview(
+          SharedMemView<int**> (team.team_shmem(), team.team_size(), 1),
+          team.team_rank(), Kokkos::ALL());
+    }
 
     Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
       // get node

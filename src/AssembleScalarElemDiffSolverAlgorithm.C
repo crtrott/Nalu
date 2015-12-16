@@ -141,24 +141,61 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
 
       SharedMemView<double**> shape_function_(team.team_shmem(), numScsIp, nodesPerElement_);
 
-      // TODO: These should be per-thread but declaring them in the per-thread parallel for causes
-      // a segfault right now. For now leave them here since the CPU has 1 thread per team anyway.
-        SharedMemView<stk::mesh::Entity*> connected_nodes_(team.team_shmem(), nodesPerElement_);
-        SharedMemView<double*> lhs_(team.team_shmem(), lhsSize);
-        SharedMemView<double*> rhs_(team.team_shmem(), rhsSize);
-        SharedMemView<double*> p_scalarQ(team.team_shmem(), nodesPerElement_);
-        SharedMemView<double*> p_diffFluxCoeff(team.team_shmem(), nodesPerElement_);
-        SharedMemView<double*> p_coordinates(team.team_shmem(), nodesPerElement_*nDim_);
-        SharedMemView<double*> p_scs_areav(team.team_shmem(), numScsIp*nDim_);
-        SharedMemView<double*> p_dndx(team.team_shmem(), nDim_*numScsIp*nodesPerElement_);
-        SharedMemView<double*> p_deriv(team.team_shmem(), nDim_*numScsIp*nodesPerElement_);
-        SharedMemView<double*> p_det_j(team.team_shmem(), numScsIp);
-        SharedMemView<int*> localIdsScratch(team.team_shmem(), nodesPerElement_);
+      // These are the per-thread handles. Better interface being worked on by Kokkos.
+      SharedMemView<stk::mesh::Entity*> connected_nodes_;
+      SharedMemView<double*> lhs_;
+      SharedMemView<double*> rhs_;
+      SharedMemView<double*> p_scalarQ;
+      SharedMemView<double*> p_diffFluxCoeff;
+      SharedMemView<double*> p_coordinates;
+      SharedMemView<double*> p_scs_areav;
+      SharedMemView<double*> p_dndx;
+      SharedMemView<double*> p_deriv;
+      SharedMemView<double*> p_det_j;
+      SharedMemView<int*> localIdsScratch;
+      {
+        connected_nodes_ = Kokkos::subview(
+            SharedMemView<stk::mesh::Entity**> (team.team_shmem(), team.team_size(), nodesPerElement_),
+            team.team_rank(), Kokkos::ALL());
+        lhs_ = Kokkos::subview(
+            SharedMemView<double**>(team.team_shmem(), team.team_size(), lhsSize),
+            team.team_rank(), Kokkos::ALL());
+        rhs_ = Kokkos::subview(
+            SharedMemView<double**>(team.team_shmem(), team.team_size(), rhsSize),
+            team.team_rank(), Kokkos::ALL());
+        p_scalarQ = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement_),
+            team.team_rank(), Kokkos::ALL());
+        p_diffFluxCoeff = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement_),
+            team.team_rank(), Kokkos::ALL());
+        p_coordinates = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement_*nDim_),
+            team.team_rank(), Kokkos::ALL());
+        p_scs_areav = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), numScsIp*nDim_),
+            team.team_rank(), Kokkos::ALL());
+        p_dndx = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nDim_*numScsIp*nodesPerElement_),
+            team.team_rank(), Kokkos::ALL());
+        p_deriv = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nDim_*numScsIp*nodesPerElement_),
+            team.team_rank(), Kokkos::ALL());
+        p_det_j = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), numScsIp),
+            team.team_rank(), Kokkos::ALL());
+        localIdsScratch = Kokkos::subview(
+            SharedMemView<int**> (team.team_shmem(), team.team_size(), nodesPerElement_),
+            team.team_rank(), Kokkos::ALL());
+      }
 
-      // TODO: What are the rules on calling virtual functions in parallel blocks?
-      // Does the object the virtual call is made on have to be in Device memory space?
-      meSCS->shape_fcn(&shape_function_(0, 0));
+      Kokkos::single(Kokkos::PerTeam(team), [&]() {
+        meSCS->shape_fcn(&shape_function_(0, 0));
+      });
+      team.team_barrier();
+
       auto lrscv = meSCS->adjacentNodes();
+
       Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
         const stk::mesh::Entity elem = b[k];
 
