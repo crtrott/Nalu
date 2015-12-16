@@ -80,9 +80,10 @@ AssembleNodeSolverAlgorithm::execute()
     realm_.get_buckets( stk::topology::NODE_RANK, s_locally_owned_union );
 
   const int bytes_per_team = 0;
-  const int bytes_per_thread = (lhsSize + rhsSize)*sizeof(double)
-    + sizeof(stk::mesh::Entity) // connected nodes
-    + 2*sizeof(int); // local ID scratch,
+  const int bytes_per_thread = SharedMemView<double*>::shmem_size(lhsSize)
+                             + SharedMemView<double*>::shmem_size(rhsSize)
+                             + SharedMemView<stk::mesh::Entity*>::shmem_size(1) // connected nodes
+                             + SharedMemView<int*>::shmem_size(1); // local ID scratch,
   // For some reason using just sizeof(int) causes the localIDsScratch pointer to be NULL.
   // Maybe there is some alignment requirement forcing the need for additional space?
 
