@@ -10,6 +10,7 @@
 #include <AssembleScalarEdgeDiffSolverAlgorithm.h>
 #include <EquationSystem.h>
 #include <FieldTypeDef.h>
+#include <KokkosInterface.h>
 #include <LinearSystem.h>
 #include <Realm.h>
 
@@ -68,22 +69,6 @@ AssembleScalarEdgeDiffSolverAlgorithm::execute()
 
   const int nDim = meta_data.spatial_dimension();
 
-  // space for LHS/RHS; always edge connectivity
-  const int nodesPerEdge = 2;
-  const int lhsSize = nodesPerEdge*nodesPerEdge;
-  const int rhsSize = nodesPerEdge;
-  std::vector<double> lhs(lhsSize);
-  std::vector<double> rhs(rhsSize);
-  std::vector<stk::mesh::Entity> connected_nodes(2);
-
-  // area vector; gather into
-  std::vector<double> areaVec(nDim);
-
-  // pointer for fast access
-  double *p_lhs = &lhs[0];
-  double *p_rhs = &rhs[0];
-  double *p_areaVec = &areaVec[0];
-
   // deal with state
   ScalarFieldType &scalarQNp1  = scalarQ_->field_of_state(stk::mesh::StateNP1);
 
@@ -94,22 +79,43 @@ AssembleScalarEdgeDiffSolverAlgorithm::execute()
 
   stk::mesh::BucketVector const& edge_buckets =
     realm_.get_buckets( stk::topology::EDGE_RANK, s_locally_owned_union );
-  for ( stk::mesh::BucketVector::const_iterator ib = edge_buckets.begin();
-        ib != edge_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
+
+  // space for LHS/RHS; always edge connectivity
+  const int nodesPerEdge = 2;
+  const int lhsSize = nodesPerEdge*nodesPerEdge;
+  const int rhsSize = nodesPerEdge;
+
+  const int bytes_per_team = 0;
+  const int bytes_per_thread = SharedMemView<double*>::shmem_size(lhsSize)
+      + SharedMemView<double*>::shmem_size(rhsSize)
+      + SharedMemView<int*>::shmem_size(nodesPerEdge) // local ID scratch
+      + SharedMemView<stk::mesh::Entity*>::shmem_size(nodesPerEdge);
+
+  auto team_exec = get_team_policy(edge_buckets.size(), bytes_per_team, bytes_per_thread);
+  Kokkos::parallel_for("Nalu::AssembleScalarEdgeDiffSolverAlgorithm",
+      team_exec, [&](const DeviceTeam & team) {
+    const int ib = team.league_rank();
+    stk::mesh::Bucket & b = *edge_buckets[ib];
     const stk::mesh::Bucket::size_type length   = b.size();
 
-    // pointer to edge area vector and mdot
-    const double * av = stk::mesh::field_data(*edgeAreaVec_, b);
+    // TODO: Should be per-thread
+    SharedMemView<double*> lhs(team.team_shmem(), lhsSize);
+    SharedMemView<double*> rhs(team.team_shmem(), rhsSize);
+    SharedMemView<stk::mesh::Entity*> connected_nodes(team.team_shmem(), nodesPerEdge);
+    SharedMemView<int*> localIdsScratch(team.team_shmem(), nodesPerEdge);
 
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
+    // pointer to edge area vector and mdot
+    Kokkos::View<double**, Kokkos::LayoutRight, Kokkos::MemoryUnmanaged>
+      av(stk::mesh::field_data(*edgeAreaVec_, b), length, nDim);
+
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
 
       // zeroing of lhs/rhs
       for ( int i = 0; i < lhsSize; ++i ) {
-        p_lhs[i] = 0.0;
+        lhs[i] = 0.0;
       }
       for ( int i = 0; i < rhsSize; ++i ) {
-        p_rhs[i] = 0.0;
+        rhs[i] = 0.0;
       }
 
       // get edge
@@ -117,11 +123,10 @@ AssembleScalarEdgeDiffSolverAlgorithm::execute()
       stk::mesh::Entity const* edge_node_rels = bulk_data.begin_nodes(edge);
 
       // sanity check on number or nodes
-      ThrowAssert( bulk_data.num_nodes(edge) == 2 );
+      //ThrowAssert( bulk_data.num_nodes(edge) == 2 );
 
       // pointer to edge area vector
-      for ( int j = 0; j < nDim; ++j )
-        p_areaVec[j] = av[k*nDim+j];
+      auto p_areaVec = Kokkos::subview(av, k, Kokkos::ALL());
 
       // left and right nodes
       stk::mesh::Entity nodeL = edge_node_rels[0];
@@ -176,20 +181,20 @@ AssembleScalarEdgeDiffSolverAlgorithm::execute()
       double diffFlux = lhsfac*(qNp1R - qNp1L) + nonOrth;
 
       // first left
-      p_lhs[0] = -lhsfac;
-      p_lhs[1] = +lhsfac;
-      p_rhs[0] = -diffFlux;
+      lhs[0] = -lhsfac;
+      lhs[1] = +lhsfac;
+      rhs[0] = -diffFlux;
 
       // now right
-      p_lhs[2] = +lhsfac;
-      p_lhs[3] = -lhsfac;
-      p_rhs[1] = diffFlux;
+      lhs[2] = +lhsfac;
+      lhs[3] = -lhsfac;
+      rhs[1] = diffFlux;
 
       // apply it
-      apply_coeff(connected_nodes, rhs, lhs, __FILE__);
+      apply_coeff(connected_nodes, rhs, lhs, localIdsScratch, __FILE__);
 
-    }
-  }
+    });
+  });
 }
 
 } // namespace nalu
