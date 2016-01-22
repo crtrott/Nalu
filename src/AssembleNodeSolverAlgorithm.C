@@ -83,7 +83,7 @@ AssembleNodeSolverAlgorithm::execute()
   const int bytes_per_thread = SharedMemView<double*>::shmem_size(lhsSize)
                              + SharedMemView<double*>::shmem_size(rhsSize)
                              + SharedMemView<stk::mesh::Entity*>::shmem_size(1) // connected nodes
-                             + SharedMemView<int*>::shmem_size(1); // local ID scratch,
+                             + SharedMemView<int*>::shmem_size(rhsSize); // local ID scratch,
 
   auto team_exec = get_team_policy(node_buckets.size(), bytes_per_team, bytes_per_thread);
 
@@ -108,7 +108,7 @@ AssembleNodeSolverAlgorithm::execute()
           SharedMemView<stk::mesh::Entity**> (team.team_shmem(), team.team_size(), 1),
           team.team_rank(), Kokkos::ALL());
       localIdsScratch = Kokkos::subview(
-          SharedMemView<int**> (team.team_shmem(), team.team_size(), 1),
+          SharedMemView<int**> (team.team_shmem(), team.team_size(), rhsSize),
           team.team_rank(), Kokkos::ALL());
     }
 

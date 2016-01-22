@@ -90,7 +90,7 @@ AssembleElemSolverAlgorithm::execute()
       SharedMemView<double *>::shmem_size(lhsSize) +
       SharedMemView<double *>::shmem_size(rhsSize) +
       SharedMemView<stk::mesh::Entity *>::shmem_size(maxNodesPerElement) +
-      SharedMemView<int *>::shmem_size(maxNodesPerElement);
+      SharedMemView<int *>::shmem_size(rhsSize);
   auto team_exec = get_team_policy(elem_buckets.size(), bytes_per_team, bytes_per_thread);
 
   Kokkos::parallel_for("Nalu::AssembleElemSolverAlgorithm::execute",
@@ -128,7 +128,7 @@ AssembleElemSolverAlgorithm::execute()
           SharedMemView<double**>(team.team_shmem(), team.team_size(), rhsSize),
           team.team_rank(), Kokkos::ALL());
       localIdsScratch = Kokkos::subview(
-          SharedMemView<int**> (team.team_shmem(), team.team_size(), nodesPerElement),
+          SharedMemView<int**> (team.team_shmem(), team.team_size(), rhsSize),
           team.team_rank(), Kokkos::ALL());
     }
 

@@ -192,7 +192,7 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
             SharedMemView<double**> (team.team_shmem(), team.team_size(), numScsIp),
             team.team_rank(), Kokkos::ALL());
         localIdsScratch = Kokkos::subview(
-            SharedMemView<int**> (team.team_shmem(), team.team_size(), nodesPerElement_),
+            SharedMemView<int**> (team.team_shmem(), team.team_size(), rhsSize),
             team.team_rank(), Kokkos::ALL());
       }
 

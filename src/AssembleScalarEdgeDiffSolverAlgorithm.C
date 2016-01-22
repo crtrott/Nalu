@@ -88,7 +88,7 @@ AssembleScalarEdgeDiffSolverAlgorithm::execute()
   const int bytes_per_team = 0;
   const int bytes_per_thread = SharedMemView<double*>::shmem_size(lhsSize)
       + SharedMemView<double*>::shmem_size(rhsSize)
-      + SharedMemView<int*>::shmem_size(nodesPerEdge) // local ID scratch
+      + SharedMemView<int*>::shmem_size(rhsSize) // local ID scratch
       + SharedMemView<stk::mesh::Entity*>::shmem_size(nodesPerEdge);
 
   auto team_exec = get_team_policy(edge_buckets.size(), bytes_per_team, bytes_per_thread);
@@ -113,7 +113,7 @@ AssembleScalarEdgeDiffSolverAlgorithm::execute()
           SharedMemView<stk::mesh::Entity**> (team.team_shmem(), team.team_size(), nodesPerEdge),
           team.team_rank(), Kokkos::ALL());
       localIdsScratch = Kokkos::subview(
-          SharedMemView<int**> (team.team_shmem(), team.team_size(), nodesPerEdge),
+          SharedMemView<int**> (team.team_shmem(), team.team_size(), rhsSize),
           team.team_rank(), Kokkos::ALL());
     }
 
