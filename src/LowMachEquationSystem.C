@@ -25,6 +25,7 @@
 #include <AssembleMomentumElemSymmetrySolverAlgorithm.h>
 #include <AssembleMomentumWallFunctionSolverAlgorithm.h>
 #include <AssembleMomentumNonConformalSolverAlgorithm.h>
+#include <AssembleElemSolverAlgorithm.h>
 #include <AssembleNodalGradAlgorithmDriver.h>
 #include <AssembleNodalGradEdgeAlgorithm.h>
 #include <AssembleNodalGradElemAlgorithm.h>
@@ -56,6 +57,7 @@
 #include <ContinuityMassBackwardEulerNodeSuppAlg.h>
 #include <ContinuityMassBDF2NodeSuppAlg.h>
 #include <ContinuityMassBDF2ElemSuppAlg.h>
+#include <ContinuityAdvElemSuppAlg.h>
 #include <CopyFieldAlgorithm.h>
 #include <DirichletBC.h>
 #include <EffectiveDiffFluxCoeffAlgorithm.h>
@@ -78,6 +80,8 @@
 #include <MomentumMassBackwardEulerElemSuppAlg.h>
 #include <MomentumMassBDF2NodeSuppAlg.h>
 #include <MomentumMassBDF2ElemSuppAlg.h>
+#include <MomentumNSOElemSuppAlg.h>
+#include <MomentumAdvDiffElemSuppAlg.h>
 #include <NaluEnv.h>
 #include <NaluParsing.h>
 #include <ProjectedNodalGradientEquationSystem.h>
@@ -105,11 +109,17 @@
 #include <user_functions/TornadoAuxFunction.h>
 #include <user_functions/WindEnergyAuxFunction.h>
 #include <user_functions/WindEnergyTaylorVortexAuxFunction.h>
+
 #include <user_functions/SteadyTaylorVortexMomentumSrcElemSuppAlg.h>
 #include <user_functions/SteadyTaylorVortexContinuitySrcElemSuppAlg.h>
 #include <user_functions/SteadyTaylorVortexMomentumSrcNodeSuppAlg.h>
 #include <user_functions/SteadyTaylorVortexVelocityAuxFunction.h>
 #include <user_functions/SteadyTaylorVortexPressureAuxFunction.h>
+
+#include <user_functions/VariableDensityVelocityAuxFunction.h>
+#include <user_functions/VariableDensityPressureAuxFunction.h>
+#include <user_functions/VariableDensityContinuitySrcNodeSuppAlg.h>
+#include <user_functions/VariableDensityMomentumSrcNodeSuppAlg.h>
 
 // stk_util
 #include <stk_util/parallel/Parallel.hpp>
@@ -149,8 +159,7 @@ namespace nalu{
 //--------------------------------------------------------------------------
 LowMachEquationSystem::LowMachEquationSystem(
   EquationSystems& eqSystems,
-  const bool elementContinuityEqs,
-  const bool managePNG)
+  const bool elementContinuityEqs)
   : EquationSystem(eqSystems, "LowMachEOSWrap"),
     elementContinuityEqs_(elementContinuityEqs),
     density_(NULL),
@@ -165,7 +174,10 @@ LowMachEquationSystem::LowMachEquationSystem(
 
   // create momentum and pressure
   momentumEqSys_= new MomentumEquationSystem(eqSystems);
-  continuityEqSys_ = new ContinuityEquationSystem(eqSystems, elementContinuityEqs_, managePNG);
+  continuityEqSys_ = new ContinuityEquationSystem(eqSystems, elementContinuityEqs_);
+
+  // inform realm
+  realm_.hasFluids_ = true;
 }
 
 //--------------------------------------------------------------------------
@@ -263,6 +275,14 @@ LowMachEquationSystem::register_element_fields(
       = &(meta_data.declare_field<GenericFieldType>(stk::topology::ELEMENT_RANK, "intersected_element"));
     stk::mesh::put_field(*intersectedElement, *part, sizeOfElemField);
   }
+
+  // provide mean element Peclet and Courant fields; always...
+  GenericFieldType *elemReynolds
+    = &(meta_data.declare_field<GenericFieldType>(stk::topology::ELEMENT_RANK, "element_reynolds"));
+  stk::mesh::put_field(*elemReynolds, *part, 1);
+  GenericFieldType *elemCourant
+    = &(meta_data.declare_field<GenericFieldType>(stk::topology::ELEMENT_RANK, "element_courant"));
+  stk::mesh::put_field(*elemCourant, *part, 1);
 }
 
 //--------------------------------------------------------------------------
@@ -455,25 +475,19 @@ LowMachEquationSystem::register_initial_condition_fcn(
     // save off the field (np1 state)
     VectorFieldType *velocityNp1 = meta_data.get_field<VectorFieldType>(stk::topology::NODE_RANK, "velocity");
     
+    // create a few Aux things
+    AuxFunction *theAuxFunc = NULL;
+    AuxFunctionAlgorithm *auxAlg = NULL;
+
     if ( fcnName == "wind_energy_taylor_vortex") {
       
       // extract the params
       std::map<std::string, std::vector<double> >::const_iterator iterParams
         = theParams.find(dofName);
       if (iterParams != theParams.end()) {
-        std::vector<double> fcnParams = (*iterParams).second;
-	
+        std::vector<double> fcnParams = (*iterParams).second;	
         // create the function
-        AuxFunction *theAuxFunc = new WindEnergyTaylorVortexAuxFunction(0,nDim,fcnParams);
-	
-        // create the algorithm
-        AuxFunctionAlgorithm *auxAlg
-          = new AuxFunctionAlgorithm(realm_, part,
-				     velocityNp1, theAuxFunc,
-				     stk::topology::NODE_RANK);
-	
-        // push to ic
-        realm_.initCondAlg_.push_back(auxAlg);
+        theAuxFunc = new WindEnergyTaylorVortexAuxFunction(0,nDim,fcnParams);
       }
       else {
         throw std::runtime_error("Wind_energy_taylor_vortex missing parameters");
@@ -482,32 +496,29 @@ LowMachEquationSystem::register_initial_condition_fcn(
     else if ( fcnName == "SteadyTaylorVortex" ) {
       
       // create the function
-      AuxFunction *theAuxFunc = new SteadyTaylorVortexVelocityAuxFunction(0,nDim);
+      theAuxFunc = new SteadyTaylorVortexVelocityAuxFunction(0,nDim);
+    }
+    else if ( fcnName == "VariableDensity" ) {
       
-      // create the algorithm
-      AuxFunctionAlgorithm *auxAlg
-        = new AuxFunctionAlgorithm(realm_, part,
-            velocityNp1, theAuxFunc,
-            stk::topology::NODE_RANK);
-      
-      // push to ic
-      realm_.initCondAlg_.push_back(auxAlg);
+      // create the function
+      theAuxFunc = new VariableDensityVelocityAuxFunction(0,nDim);
     }
     else if ( fcnName == "convecting_taylor_vortex" ) {
       
       // create the function
-      AuxFunction *theAuxFunc = new ConvectingTaylorVortexVelocityAuxFunction(0,nDim);
-      
-      // create the algorithm
-      AuxFunctionAlgorithm *auxAlg
-        = new AuxFunctionAlgorithm(realm_, part,
-            velocityNp1, theAuxFunc,
-            stk::topology::NODE_RANK);
-      
-      // push to ic
-      realm_.initCondAlg_.push_back(auxAlg);
-      
+      theAuxFunc = new ConvectingTaylorVortexVelocityAuxFunction(0,nDim); 
     }
+    else {
+      throw std::runtime_error("InitialCondFunction::non-supported velocity IC"); 
+    }
+
+    // create the algorithm
+    auxAlg = new AuxFunctionAlgorithm(realm_, part,
+                                      velocityNp1, theAuxFunc,
+                                      stk::topology::NODE_RANK);
+    
+    // push to ic
+    realm_.initCondAlg_.push_back(auxAlg);
   }
 }
 
@@ -592,7 +603,7 @@ LowMachEquationSystem::solve_and_update()
     // solve/update since dudx is required for tke
     // production
     timeA = stk::wall_time();
-    momentumEqSys_->assembleNodalGradAlgDriver_->execute();
+    momentumEqSys_->compute_projected_nodal_gradient();
     momentumEqSys_->compute_wall_function_params();
     timeB = stk::wall_time();
     momentumEqSys_->timerMisc_ += (timeB-timeA);
@@ -769,6 +780,7 @@ LowMachEquationSystem::post_converged_work()
 MomentumEquationSystem::MomentumEquationSystem(
   EquationSystems& eqSystems)
   : EquationSystem(eqSystems, "MomentumEQS"),
+    managePNG_(realm_.get_consistent_mass_matrix_png("velocity")),
     velocity_(NULL),
     dudx_(NULL),
     coordinates_(NULL),
@@ -780,7 +792,9 @@ MomentumEquationSystem::MomentumEquationSystem(
     diffFluxCoeffAlgDriver_(new AlgorithmDriver(realm_)),
     tviscAlgDriver_(new AlgorithmDriver(realm_)),
     cflReyAlgDriver_(new AlgorithmDriver(realm_)),
-    wallFunctionParamsAlgDriver_(NULL)
+    wallFunctionParamsAlgDriver_(NULL),
+    projectedNodalGradEqs_(NULL),
+    firstPNGResidual_(0.0)
 {
   // extract solver name and solver object
   std::string solverName = realm_.equationSystems_.get_solver_block_name("velocity");
@@ -793,6 +807,11 @@ MomentumEquationSystem::MomentumEquationSystem(
 
   // push back EQ to manager
   realm_.push_equation_to_systems(this);
+
+  // create projected nodal gradient equation system
+  if ( managePNG_ ) {
+     manage_projected_nodal_gradient(eqSystems);
+  }
 }
 
 //--------------------------------------------------------------------------
@@ -819,8 +838,7 @@ MomentumEquationSystem::initial_work()
 
   // proceed with a bunch of initial work; wrap in timer
   const double timeA = stk::wall_time();
-
-  assembleNodalGradAlgDriver_->execute();
+  compute_projected_nodal_gradient();
   compute_wall_function_params();
   tviscAlgDriver_->execute();
   diffFluxCoeffAlgDriver_->execute();
@@ -828,7 +846,6 @@ MomentumEquationSystem::initial_work()
 
   const double timeB = stk::wall_time();
   timerMisc_ += (timeB-timeA);
-
 }
 
 //--------------------------------------------------------------------------
@@ -838,7 +855,6 @@ void
 MomentumEquationSystem::register_nodal_fields(
   stk::mesh::Part *part)
 {
-
   stk::mesh::MetaData &meta_data = realm_.meta_data();
 
   const int nDim = meta_data.spatial_dimension();
@@ -880,6 +896,13 @@ MomentumEquationSystem::register_nodal_fields(
                                0, nDim,
                                stk::topology::NODE_RANK);
     copyStateAlg_.push_back(theCopyAlg);
+  }
+
+  // register specialty fields for PNG
+  if (managePNG_ ) {
+    // create temp vector field for duidx that will hold the active dudx
+    VectorFieldType *duidx =  &(meta_data.declare_field<VectorFieldType>(stk::topology::NODE_RANK, "duidx"));
+      stk::mesh::put_field(*duidx, *part, nDim);
   }
 }
 
@@ -932,35 +955,40 @@ MomentumEquationSystem::register_interior_algorithm(
   GenericFieldType &dudxNone = dudx_->field_of_state(stk::mesh::StateNone);
 
   // non-solver; contribution to Gjui; allow for element-based shifted
-  std::map<AlgorithmType, Algorithm *>::iterator itgu
-    = assembleNodalGradAlgDriver_->algMap_.find(algType);
-  if ( itgu == assembleNodalGradAlgDriver_->algMap_.end() ) {
-    Algorithm *theAlg = NULL;
-    if ( edgeNodalGradient_ && realm_.realmUsesEdges_ ) {
-      theAlg = new AssembleNodalGradUEdgeAlgorithm(realm_, part, &velocityNp1, &dudxNone);
+  if ( !managePNG_ ) {
+    std::map<AlgorithmType, Algorithm *>::iterator itgu
+      = assembleNodalGradAlgDriver_->algMap_.find(algType);
+    if ( itgu == assembleNodalGradAlgDriver_->algMap_.end() ) {
+      Algorithm *theAlg = NULL;
+      if ( edgeNodalGradient_ && realm_.realmUsesEdges_ ) {
+        theAlg = new AssembleNodalGradUEdgeAlgorithm(realm_, part, &velocityNp1, &dudxNone);
+      }
+      else {
+        theAlg = new AssembleNodalGradUElemAlgorithm(realm_, part, &velocityNp1, &dudxNone, edgeNodalGradient_);
+      }
+      assembleNodalGradAlgDriver_->algMap_[algType] = theAlg;
     }
     else {
-      theAlg = new AssembleNodalGradUElemAlgorithm(realm_, part, &velocityNp1, &dudxNone, edgeNodalGradient_);
+      itgu->second->partVec_.push_back(part);
     }
-    assembleNodalGradAlgDriver_->algMap_[algType] = theAlg;
-  }
-  else {
-    itgu->second->partVec_.push_back(part);
   }
 
-  // solver; interior contribution (advection + diffusion) [possible CMM]
+  // solver; interior contribution (advection + diffusion) [possible CMM time]
   bool useCMM = false;
   std::map<AlgorithmType, SolverAlgorithm *>::iterator itsi
     = solverAlgDriver_->solverAlgMap_.find(algType);
   if ( itsi == solverAlgDriver_->solverAlgMap_.end() ) {
-    SolverAlgorithm *theAlg = NULL;
+    SolverAlgorithm *theSolverAlg = NULL;
     if ( realm_.realmUsesEdges_ ) {
-      theAlg = new AssembleMomentumEdgeSolverAlgorithm(realm_, part, this);
+      theSolverAlg = new AssembleMomentumEdgeSolverAlgorithm(realm_, part, this);
     }
     else {
-      theAlg = new AssembleMomentumElemSolverAlgorithm(realm_, part, this);
+      if ( realm_.solutionOptions_->useConsolidatedSolverAlg_ )
+        theSolverAlg = new AssembleElemSolverAlgorithm(realm_, part, this); // WIP
+      else
+        theSolverAlg = new AssembleMomentumElemSolverAlgorithm(realm_, part, this);
     }
-    solverAlgDriver_->solverAlgMap_[algType] = theAlg;
+    solverAlgDriver_->solverAlgMap_[algType] = theSolverAlg;
     
     // look for fully integrated source terms, e.g., mass/src
     std::map<std::string, std::vector<std::string> >::iterator isrc 
@@ -982,13 +1010,28 @@ MomentumEquationSystem::register_interior_algorithm(
         else if (sourceName == "SteadyTaylorVortex" ) {
           suppAlg = new SteadyTaylorVortexMomentumSrcElemSuppAlg(realm_);
         }
+        else if (sourceName == "NSO_2ND" ) {
+          suppAlg = new MomentumNSOElemSuppAlg(realm_, velocity_, dudx_, realm_.is_turbulent() ? evisc_ : visc_, 0.0, 0.0);
+        }
+        else if (sourceName == "NSO_2ND_ALT" ) {
+          suppAlg = new MomentumNSOElemSuppAlg(realm_, velocity_, dudx_, realm_.is_turbulent() ? evisc_ : visc_, 0.0, 1.0);
+        }
+        else if (sourceName == "NSO_4TH" ) {
+          suppAlg = new MomentumNSOElemSuppAlg(realm_, velocity_, dudx_, realm_.is_turbulent() ? evisc_ : visc_, 1.0, 0.0);
+        }
+        else if (sourceName == "NSO_4TH_ALT" ) {
+          suppAlg = new MomentumNSOElemSuppAlg(realm_, velocity_, dudx_, realm_.is_turbulent() ? evisc_ : visc_, 1.0, 1.0);
+        }
         else if (sourceName == "buoyancy" ) {
           suppAlg = new MomentumBuoyancySrcElemSuppAlg(realm_);
         }
-        else {
-          throw std::runtime_error("ElemSrcTermsError::only support CMM and SteadyTV");
+        else if (sourceName == "advection_diffusion" ) {
+          suppAlg = new MomentumAdvDiffElemSuppAlg(realm_, velocity_, realm_.is_turbulent() ? evisc_ : visc_);
         }
-        theAlg->supplementalAlg_.push_back(suppAlg); 
+        else {
+          throw std::runtime_error("ElemSrcTermsError::only support CMM, nso_2nd, nso_4th, buoyancy, advection_diffusion and SteadyTaylorVortex");
+        }
+        theSolverAlg->supplementalAlg_.push_back(suppAlg);
       }
     }
   }
@@ -1049,6 +1092,9 @@ MomentumEquationSystem::register_interior_algorithm(
         }
         else if (sourceName == "SteadyTaylorVortex" ) {
           suppAlg = new SteadyTaylorVortexMomentumSrcNodeSuppAlg(realm_);
+        }
+        else if (sourceName == "VariableDensity" ) {
+          suppAlg = new VariableDensityMomentumSrcNodeSuppAlg(realm_);
         }
         else {
           throw std::runtime_error("MomentumEquationSystem::only buoyancy, buoyancy_boussinesq, body force or gcl are supported");
@@ -1162,8 +1208,11 @@ MomentumEquationSystem::register_inflow_bc(
     else if ( fcnName == "SteadyTaylorVortex" ) {
       theAuxFunc = new SteadyTaylorVortexVelocityAuxFunction(0,nDim);
     }
+    else if ( fcnName == "VariableDensity" ) {
+      theAuxFunc = new VariableDensityVelocityAuxFunction(0,nDim);
+    }
     else {
-      throw std::runtime_error("MomentumEquationSystem::register_inflow_bc: Only convecting_tv supported");
+      throw std::runtime_error("MomentumEquationSystem::register_inflow_bc: Only convecting_taylor_vortex, SteadyTaylorVortex and VariableDensity supported");
     }
   }
   else {
@@ -1187,15 +1236,17 @@ MomentumEquationSystem::register_inflow_bc(
   bcDataMapAlg_.push_back(theCopyAlg);
   
   // non-solver; contribution to Gjui; allow for element-based shifted
-  std::map<AlgorithmType, Algorithm *>::iterator it
-    = assembleNodalGradAlgDriver_->algMap_.find(algType);
-  if ( it == assembleNodalGradAlgDriver_->algMap_.end() ) {
-    Algorithm *theAlg 
-      = new AssembleNodalGradUBoundaryAlgorithm(realm_, part, &velocityNp1, &dudxNone, edgeNodalGradient_);
-    assembleNodalGradAlgDriver_->algMap_[algType] = theAlg;
-  }
-  else {
-    it->second->partVec_.push_back(part);
+  if ( !managePNG_ ) {
+    std::map<AlgorithmType, Algorithm *>::iterator it
+      = assembleNodalGradAlgDriver_->algMap_.find(algType);
+    if ( it == assembleNodalGradAlgDriver_->algMap_.end() ) {
+      Algorithm *theAlg
+        = new AssembleNodalGradUBoundaryAlgorithm(realm_, part, &velocityNp1, &dudxNone, edgeNodalGradient_);
+      assembleNodalGradAlgDriver_->algMap_[algType] = theAlg;
+    }
+    else {
+      it->second->partVec_.push_back(part);
+    }
   }
 
   // Dirichlet bc
@@ -1256,15 +1307,17 @@ MomentumEquationSystem::register_open_bc(
   GenericFieldType &dudxNone = dudx_->field_of_state(stk::mesh::StateNone);
 
   // non-solver; contribution to Gjui; allow for element-based shifted
-  std::map<AlgorithmType, Algorithm *>::iterator it
-    = assembleNodalGradAlgDriver_->algMap_.find(algType);
-  if ( it == assembleNodalGradAlgDriver_->algMap_.end() ) {
-    Algorithm *theAlg 
-      = new AssembleNodalGradUBoundaryAlgorithm(realm_, part, &velocityNp1, &dudxNone, edgeNodalGradient_);
-    assembleNodalGradAlgDriver_->algMap_[algType] = theAlg;
-  }
-  else {
-    it->second->partVec_.push_back(part);
+  if ( !managePNG_ ) {
+    std::map<AlgorithmType, Algorithm *>::iterator it
+      = assembleNodalGradAlgDriver_->algMap_.find(algType);
+    if ( it == assembleNodalGradAlgDriver_->algMap_.end() ) {
+      Algorithm *theAlg
+        = new AssembleNodalGradUBoundaryAlgorithm(realm_, part, &velocityNp1, &dudxNone, edgeNodalGradient_);
+      assembleNodalGradAlgDriver_->algMap_[algType] = theAlg;
+    }
+    else {
+      it->second->partVec_.push_back(part);
+    }
   }
 
   // solver algs; lhs
@@ -1378,15 +1431,17 @@ MomentumEquationSystem::register_wall_bc(
   bcDataMapAlg_.push_back(theCopyAlg);
 
   // non-solver; contribution to Gjui; allow for element-based shifted
-  std::map<AlgorithmType, Algorithm *>::iterator it
-    = assembleNodalGradAlgDriver_->algMap_.find(algType);
-  if ( it == assembleNodalGradAlgDriver_->algMap_.end() ) {
-    Algorithm *theAlg 
-      = new AssembleNodalGradUBoundaryAlgorithm(realm_, part, &velocityNp1, &dudxNone, edgeNodalGradient_);
-    assembleNodalGradAlgDriver_->algMap_[algType] = theAlg;
-  }
-  else {
-    it->second->partVec_.push_back(part);
+  if ( !managePNG_ ) {
+    std::map<AlgorithmType, Algorithm *>::iterator it
+      = assembleNodalGradAlgDriver_->algMap_.find(algType);
+    if ( it == assembleNodalGradAlgDriver_->algMap_.end() ) {
+      Algorithm *theAlg
+        = new AssembleNodalGradUBoundaryAlgorithm(realm_, part, &velocityNp1, &dudxNone, edgeNodalGradient_);
+      assembleNodalGradAlgDriver_->algMap_[algType] = theAlg;
+    }
+    else {
+      it->second->partVec_.push_back(part);
+    }
   }
 
   // Dirichlet or wall function bc
@@ -1513,6 +1568,10 @@ MomentumEquationSystem::register_contact_bc(
   else {
     throw std::runtime_error("Sorry, element-based contact not supported");
   }
+
+  // error checking; PNG not ready for prime time here
+  if ( managePNG_ )
+    throw std::runtime_error("Contact algorithm not set up for PNG");
 }
 
 //--------------------------------------------------------------------------
@@ -1532,15 +1591,17 @@ MomentumEquationSystem::register_symmetry_bc(
   GenericFieldType &dudxNone = dudx_->field_of_state(stk::mesh::StateNone);
 
   // non-solver; contribution to Gjui; allow for element-based shifted
-  std::map<AlgorithmType, Algorithm *>::iterator it
-    = assembleNodalGradAlgDriver_->algMap_.find(algType);
-  if ( it == assembleNodalGradAlgDriver_->algMap_.end() ) {
-    Algorithm *theAlg 
-      = new AssembleNodalGradUBoundaryAlgorithm(realm_, part, &velocityNp1, &dudxNone, edgeNodalGradient_);
-    assembleNodalGradAlgDriver_->algMap_[algType] = theAlg;
-  }
-  else {
-    it->second->partVec_.push_back(part);
+  if ( !managePNG_ ) {
+    std::map<AlgorithmType, Algorithm *>::iterator it
+      = assembleNodalGradAlgDriver_->algMap_.find(algType);
+    if ( it == assembleNodalGradAlgDriver_->algMap_.end() ) {
+      Algorithm *theAlg
+        = new AssembleNodalGradUBoundaryAlgorithm(realm_, part, &velocityNp1, &dudxNone, edgeNodalGradient_);
+      assembleNodalGradAlgDriver_->algMap_[algType] = theAlg;
+    }
+    else {
+      it->second->partVec_.push_back(part);
+    }
   }
 
   // solver algs; lhs
@@ -1625,6 +1686,10 @@ MomentumEquationSystem::register_non_conformal_bc(
   else {
     itsi->second->partVec_.push_back(part);
   }
+
+  // error checking; DG algorithm not ready for primetime
+  if ( managePNG_ )
+    throw std::runtime_error("Nonconformal algorithm not set up for PNG");
 }
 
 //--------------------------------------------------------------------------
@@ -1700,6 +1765,104 @@ MomentumEquationSystem::compute_wall_function_params()
   }
 }
 
+//--------------------------------------------------------------------------
+//-------- manage_projected_nodal_gradient ---------------------------------
+//--------------------------------------------------------------------------
+void
+MomentumEquationSystem::manage_projected_nodal_gradient(
+  EquationSystems& eqSystems)
+{
+  if ( NULL == projectedNodalGradEqs_ ) {
+    projectedNodalGradEqs_
+      = new ProjectedNodalGradientEquationSystem(eqSystems, EQ_PNG_U, "duidx", "qTmp", "pTmp", "PNGradUEQS");
+
+    // turn off output
+    projectedNodalGradEqs_->deactivate_output();
+  }
+  // fill the map for expected boundary condition names; recycle pTmp (ui copied in as needed)
+  projectedNodalGradEqs_->set_data_map(INFLOW_BC, "pTmp");
+  projectedNodalGradEqs_->set_data_map(WALL_BC, "pTmp"); // might want wall_function velocity_bc?
+  projectedNodalGradEqs_->set_data_map(OPEN_BC, "pTmp");
+  projectedNodalGradEqs_->set_data_map(SYMMETRY_BC, "pTmp");
+}
+
+//--------------------------------------------------------------------------
+//-------- compute_projected_nodal_gradient---------------------------------
+//--------------------------------------------------------------------------
+void
+MomentumEquationSystem::compute_projected_nodal_gradient()
+{
+  if ( !managePNG_ ) {
+    assembleNodalGradAlgDriver_->execute();
+  }
+  else {
+    // this option is more complex... Rather than solving a nDim*nDim system, we
+    // copy each velocity component i to the expected dof for the PNG system; pTmp
+
+    // extract fields
+    ScalarFieldType *pTmp = realm_.meta_data().get_field<ScalarFieldType>(stk::topology::NODE_RANK, "pTmp");
+    VectorFieldType *duidx = realm_.meta_data().get_field<VectorFieldType>(stk::topology::NODE_RANK, "duidx");
+
+    const int nDim = realm_.meta_data().spatial_dimension();
+
+    // manage norms here
+    bool isFirst = realm_.currentNonlinearIteration_ == 1;
+    if ( isFirst )
+      firstPNGResidual_ = 0.0;
+
+    double sumNonlinearResidual = 0.0;
+    double sumLinearResidual = 0.0;
+    int sumLinearIterations = 0;
+    for ( int i = 0; i < nDim; ++i ) {
+      // copy velocity, component i to pTmp
+      field_index_copy(realm_.meta_data(), realm_.bulk_data(), *velocity_, i, *pTmp, 0,
+        realm_.get_activate_aura());
+
+      // copy active tensor, dudx to vector, duidx
+      for ( int k = 0; k < nDim; ++k ) {
+        field_index_copy(realm_.meta_data(), realm_.bulk_data(), *dudx_, i*nDim+k, *duidx, k,
+          realm_.get_activate_aura());
+      }
+
+      projectedNodalGradEqs_->solve_and_update_external();
+
+      // extract the solver history info
+      const double nonlinearRes = projectedNodalGradEqs_->linsys_->nonLinearResidual();
+      const double linearRes = projectedNodalGradEqs_->linsys_->linearResidual();
+      const int linearIter = projectedNodalGradEqs_->linsys_->linearSolveIterations();
+
+      // sum system norms for this iteration
+      sumNonlinearResidual += nonlinearRes;
+      sumLinearResidual += linearRes;
+      sumLinearIterations += linearIter;
+
+      // increment first nonlinear residual
+      if ( isFirst )
+        firstPNGResidual_ += nonlinearRes;
+
+      // copy vector, duidx_k to tensor, dudx; this one might hurt as compared to a specialty loop..
+      for ( int k = 0; k < nDim; ++k ) {
+        field_index_copy(realm_.meta_data(), realm_.bulk_data(), *duidx, k, *dudx_, nDim*i+k,
+          realm_.get_activate_aura());
+      }
+    }
+
+    // output norms
+    const double scaledNonLinearResidual = sumNonlinearResidual/std::max(std::numeric_limits<double>::epsilon(), firstPNGResidual_);
+    std::string pngName = projectedNodalGradEqs_->linsys_->name();
+    const int nameOffset = pngName.length()+8;
+    NaluEnv::self().naluOutputP0()
+        << std::setw(nameOffset) << std::right << pngName
+        << std::setw(32-nameOffset)  << std::right << sumLinearIterations
+        << std::setw(18) << std::right << sumLinearResidual
+        << std::setw(15) << std::right << sumNonlinearResidual
+        << std::setw(14) << std::right << scaledNonLinearResidual << std::endl;
+
+    // a bit covert, provide linsys with the new norm which is the sum of all norms
+    projectedNodalGradEqs_->linsys_->setNonLinearResidual(sumNonlinearResidual);
+  }
+}
+
 //==========================================================================
 // Class Definition
 //==========================================================================
@@ -1710,11 +1873,10 @@ MomentumEquationSystem::compute_wall_function_params()
 //--------------------------------------------------------------------------
 ContinuityEquationSystem::ContinuityEquationSystem(
   EquationSystems& eqSystems,
-  const bool elementContinuityEqs,
-  const bool managePNG)
+  const bool elementContinuityEqs)
   : EquationSystem(eqSystems, "ContinuityEQS"),
     elementContinuityEqs_(elementContinuityEqs),
-    managePNG_(managePNG),
+    managePNG_(realm_.get_consistent_mass_matrix_png("pressure")),
     pressure_(NULL),
     dpdx_(NULL),
     massFlowRate_(NULL),
@@ -1749,7 +1911,6 @@ ContinuityEquationSystem::ContinuityEquationSystem(
   if ( managePNG_ ) {
     manage_projected_nodal_gradient(eqSystems);
   }
-
 }
 
 //--------------------------------------------------------------------------
@@ -1894,9 +2055,12 @@ ContinuityEquationSystem::register_interior_algorithm(
     std::map<AlgorithmType, SolverAlgorithm *>::iterator its
       = solverAlgDriver_->solverAlgMap_.find(algType);
     if ( its == solverAlgDriver_->solverAlgMap_.end() ) {
-      AssembleContinuityElemSolverAlgorithm *theAlg
-        = new AssembleContinuityElemSolverAlgorithm(realm_, part, this);
-      solverAlgDriver_->solverAlgMap_[algType] = theAlg;
+      SolverAlgorithm *theSolverAlg = NULL;
+      if ( realm_.solutionOptions_->useConsolidatedSolverAlg_ )
+        theSolverAlg = new AssembleElemSolverAlgorithm(realm_, part, this);
+      else
+        theSolverAlg = new AssembleContinuityElemSolverAlgorithm(realm_, part, this);
+      solverAlgDriver_->solverAlgMap_[algType] = theSolverAlg;
 
       // look for src
       std::map<std::string, std::vector<std::string> >::iterator isrc 
@@ -1912,10 +2076,13 @@ ContinuityEquationSystem::register_interior_algorithm(
           else if (sourceName == "density_time_derivative" ) {
             suppAlg = new ContinuityMassBDF2ElemSuppAlg(realm_);
           }
-          else {
-            throw std::runtime_error("ElemSrcTermsError::only support SteadyTV");
+          else if (sourceName == "advection" ) {
+            suppAlg = new ContinuityAdvElemSuppAlg(realm_);
           }
-          theAlg->supplementalAlg_.push_back(suppAlg); 
+          else {
+            throw std::runtime_error("ElemSrcTermsError::only support SteadyTaylorVortex, density_time_derivative and advection");
+          }
+          theSolverAlg->supplementalAlg_.push_back(suppAlg);
         }
       }
     }
@@ -1958,6 +2125,9 @@ ContinuityEquationSystem::register_interior_algorithm(
         }
         else if ( sourceName == "gcl" ) {
           suppAlg = new ContinuityGclNodeSuppAlg(realm_);
+        }
+        else if ( sourceName == "VariableDensity" ) {
+          suppAlg = new VariableDensityContinuitySrcNodeSuppAlg(realm_);
         }
         else {
           throw std::runtime_error("ContinuityEquationSystem::only density_time_derivative, low_speed_compressible or gcl are supported");
@@ -2026,8 +2196,11 @@ ContinuityEquationSystem::register_inflow_bc(
     else if ( fcnName == "SteadyTaylorVortex" ) {
       theAuxFunc = new SteadyTaylorVortexVelocityAuxFunction(0,nDim);
     }
+    else if ( fcnName == "VariableDensity" ) {
+      theAuxFunc = new VariableDensityVelocityAuxFunction(0,nDim);
+    }
     else {
-      throw std::runtime_error("ContEquationSystem::register_inflow_bc: Only convecting_tv supported");
+      throw std::runtime_error("ContEquationSystem::register_inflow_bc: Only convecting_taylor_vortex, SteadyTaylorVortex and VariableDensity supported");
     }
   }
   else {
@@ -2360,7 +2533,6 @@ ContinuityEquationSystem::register_non_conformal_bc(
     itsi->second->partVec_.push_back(part);
   }
 }
-
 //--------------------------------------------------------------------------
 //-------- register_overset_bc ---------------------------------------------
 //--------------------------------------------------------------------------
@@ -2434,8 +2606,12 @@ ContinuityEquationSystem::register_initial_condition_fcn(
       // create the function
       theAuxFunc = new SteadyTaylorVortexPressureAuxFunction();      
     }
+    else if ( fcnName == "VariableDensity" ) {
+      // create the function
+      theAuxFunc = new VariableDensityPressureAuxFunction();      
+    }
     else {
-      throw std::runtime_error("ContinuityEquationSystem::register_initial_condition_fcn: Conv_tv only supported");
+      throw std::runtime_error("ContinuityEquationSystem::register_initial_condition_fcn: convecting_taylor_vortex, SteadyTaylorVortex and VariableDensity only supported");
     }
     
     // create the algorithm
@@ -2459,7 +2635,7 @@ ContinuityEquationSystem::manage_projected_nodal_gradient(
 {
   if ( NULL == projectedNodalGradEqs_ ) {
     projectedNodalGradEqs_ 
-      = new ProjectedNodalGradientEquationSystem(eqSystems, "dpdx", "qTmp", "pressure", "PNGGradEQS");
+      = new ProjectedNodalGradientEquationSystem(eqSystems, EQ_PNG_P, "dpdx", "qTmp", "pressure", "PNGradPEQS");
   }
   // fill the map for expected boundary condition names...
   projectedNodalGradEqs_->set_data_map(INFLOW_BC, "pressure");

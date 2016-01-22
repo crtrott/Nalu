@@ -14,6 +14,10 @@
 #include <string>
 #include <set>
 
+namespace Ioss{
+  class PropertyManager;
+}
+
 namespace sierra{
 namespace nalu{
 
@@ -25,9 +29,17 @@ public:
   ~OutputInfo();
   
   void load(const YAML::Node & node);
+
+  // helper methods for compression options
+  int get_output_compression();
+  bool get_output_shuffle();
+  
+  int get_restart_compression();
+  bool get_restart_shuffle();
   
   std::string outputDBName_;
   int outputFreq_;
+  int outputStart_;
   bool outputNodeSet_; 
   int serializedIOGroupSize_;
   bool hasOutputBlock_;
@@ -37,8 +49,18 @@ public:
   double restartTime_;
   std::string restartDBName_;
   int restartFreq_;
+  int restartStart_;
   int restartMaxDataBaseStepSize_;
   bool restartNodeSet_;
+  int outputCompressionLevel_;
+  bool outputCompressionShuffle_;
+  int restartCompressionLevel_;
+  bool restartCompressionShuffle_;
+
+  // manage the properties for io
+  Ioss::PropertyManager *outputPropertyManager_;
+  Ioss::PropertyManager *restartPropertyManager_;
+
   std::set<std::string> outputFieldNameSet_;
   std::set<std::string> restartFieldNameSet_;
 

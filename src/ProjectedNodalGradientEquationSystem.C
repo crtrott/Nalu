@@ -63,12 +63,14 @@ namespace nalu{
 //--------------------------------------------------------------------------
 ProjectedNodalGradientEquationSystem::ProjectedNodalGradientEquationSystem(
  EquationSystems& eqSystems,
+ const EquationType eqType,
  const std::string dofName, 
  const std::string deltaName, 
  const std::string independentDofName,
  const std::string eqSysName,
  const bool managesSolve)
   : EquationSystem(eqSystems, eqSysName),
+    eqType_(eqType),
     dofName_(dofName),
     deltaName_(deltaName),
     independentDofName_(independentDofName),
@@ -79,7 +81,7 @@ ProjectedNodalGradientEquationSystem::ProjectedNodalGradientEquationSystem(
 {
   // extract solver name and solver object
   std::string solverName = realm_.equationSystems_.get_solver_block_name(dofName);
-  LinearSolver *solver = realm_.root()->linearSolvers_->create_solver(solverName, EQ_PNG);
+  LinearSolver *solver = realm_.root()->linearSolvers_->create_solver(solverName, eqType_);
   linsys_ = LinearSystem::create(realm_, realm_.spatialDimension_, eqSysName_, solver);
 
   // push back EQ to manager
@@ -224,7 +226,6 @@ ProjectedNodalGradientEquationSystem::register_open_bc(
   const stk::topology &/*theTopo*/,
   const OpenBoundaryConditionData &/*openBCData*/)
 {
-
   const AlgorithmType algType = OPEN;
 
   // extract the field name for this bc type
@@ -270,6 +271,29 @@ ProjectedNodalGradientEquationSystem::register_symmetry_bc(
 }
 
 //--------------------------------------------------------------------------
+//-------- register_contact_bc ---------------------------------------------
+//--------------------------------------------------------------------------
+void
+ProjectedNodalGradientEquationSystem::register_contact_bc(
+  stk::mesh::Part */*part*/,
+  const stk::topology &/*theTopo*/,
+  const ContactBoundaryConditionData &/*contactBCData*/) 
+{
+  throw std::runtime_error("ProjectedNodalGradientEquationSystem::register_contact_bc: bc not supported");
+}
+
+//--------------------------------------------------------------------------
+//-------- register_non_conformal_bc ---------------------------------------
+//--------------------------------------------------------------------------
+void
+ProjectedNodalGradientEquationSystem::register_non_conformal_bc(
+  stk::mesh::Part */*part*/,
+  const stk::topology &/*theTopo*/)
+{
+  throw std::runtime_error("ProjectedNodalGradientEquationSystem::register_non_conformal_bc: bc not supported");
+}
+
+//--------------------------------------------------------------------------
 //-------- initialize ------------------------------------------------------
 //--------------------------------------------------------------------------
 void
@@ -290,7 +314,7 @@ ProjectedNodalGradientEquationSystem::reinitialize_linear_system()
   delete linsys_;
 
   // delete old solver
-  const EquationType theEqID = EQ_PNG;
+  const EquationType theEqID = eqType_;
   LinearSolver *theSolver = NULL;
   std::map<EquationType, LinearSolver *>::const_iterator iter
     = realm_.root()->linearSolvers_->solvers_.find(theEqID);
@@ -301,7 +325,7 @@ ProjectedNodalGradientEquationSystem::reinitialize_linear_system()
 
   // create new solver
   std::string solverName = realm_.equationSystems_.get_solver_block_name(dofName_);
-  LinearSolver *solver = realm_.root()->linearSolvers_->create_solver(solverName, EQ_PNG);
+  LinearSolver *solver = realm_.root()->linearSolvers_->create_solver(solverName, eqType_);
   linsys_ = LinearSystem::create(realm_, 1, eqSysName_, solver);
 
   // initialize
@@ -325,12 +349,8 @@ ProjectedNodalGradientEquationSystem::solve_and_update()
 void
 ProjectedNodalGradientEquationSystem::solve_and_update_external()
 {
-  maxIterations_ = 1;
   for ( int k = 0; k < maxIterations_; ++k ) {
 
-    NaluEnv::self().naluOutputP0() << " " << k+1 << "/" << maxIterations_
-                    << std::setw(15) << std::right << name_ << std::endl;
-    
     // projected nodal gradient, load_complete and solve
     assemble_and_solve(qTmp_);
     
@@ -345,6 +365,15 @@ ProjectedNodalGradientEquationSystem::solve_and_update_external()
     double timeB = stk::wall_time();
     timerAssemble_ += (timeB-timeA);   
   }
+}
+
+//--------------------------------------------------------------------------
+//-------- deactivate_output -----------------------------------------------
+//--------------------------------------------------------------------------
+void
+ProjectedNodalGradientEquationSystem::deactivate_output()
+{
+  linsys_->provideOutput_ = false;
 }
 
 } // namespace nalu

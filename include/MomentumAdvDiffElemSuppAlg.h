@@ -6,8 +6,8 @@
 /*------------------------------------------------------------------------*/
 
 
-#ifndef SteadyTaylorVortexMixFracSrcElemSuppAlg_h
-#define SteadyTaylorVortexMixFracSrcElemSuppAlg_h
+#ifndef MomentumAdvDiffElemSuppAlg_h
+#define MomentumAdvDiffElemSuppAlg_h
 
 #include <SupplementalAlgorithm.h>
 #include <FieldTypeDef.h>
@@ -21,14 +21,16 @@ namespace nalu{
 class Realm;
 class MasterElement;
 
-class SteadyTaylorVortexMixFracSrcElemSuppAlg : public SupplementalAlgorithm
+class MomentumAdvDiffElemSuppAlg : public SupplementalAlgorithm
 {
 public:
 
-  SteadyTaylorVortexMixFracSrcElemSuppAlg(
-    Realm &realm);
+  MomentumAdvDiffElemSuppAlg(
+    Realm &realm,
+    VectorFieldType *velocity,
+    ScalarFieldType *viscosity);
 
-  virtual ~SteadyTaylorVortexMixFracSrcElemSuppAlg() {}
+  virtual ~MomentumAdvDiffElemSuppAlg() {}
 
   virtual void setup();
 
@@ -45,31 +47,28 @@ public:
   
   const stk::mesh::BulkData *bulkData_;
 
+  VectorFieldType *velocityNp1_;
   VectorFieldType *coordinates_;
+  ScalarFieldType *viscosity_;
+  GenericFieldType *massFlowRate_;
 
-  double dt_;
   const int nDim_;
-  const double rhoP_;
-  const double rhoS_;
-  const double unot_;
-  const double vnot_;
-  const double znot_;
-  const double pnot_;
-  const double visc_;
-  const double a_;
-  const double amf_;
-  const double Sc_;  
-  const double pi_;
+  const double includeDivU_;
 
-  const bool useShifted_;
+  // fixed space
+  std::vector<double> ws_uIp_;
 
-  // scratch space (at constructor)
-  std::vector<double> scvCoords_;
-  std::vector<double> srcXi_;
-  // at elem_resize
+  // scratch space; geometry
+  std::vector<double> ws_scs_areav_;
+  std::vector<double> ws_dndx_;
+  std::vector<double> ws_deriv_;
+  std::vector<double> ws_det_j_;
   std::vector<double> ws_shape_function_;
+
+  // scratch space; fields
+  std::vector<double> ws_uNp1_;
   std::vector<double> ws_coordinates_;
-  std::vector<double> ws_scv_volume_;
+  std::vector<double> ws_viscosity_;
 };
 
 } // namespace nalu

@@ -35,6 +35,7 @@ public:
 
   ProjectedNodalGradientEquationSystem(
     EquationSystems& equationSystems,
+    const EquationType eqType,
     const std::string dofName, 
     const std::string deltaName, 
     const std::string independentDofName,
@@ -74,6 +75,17 @@ public:
     const stk::topology &theTopo,
     const SymmetryBoundaryConditionData &symmetryBCData);
 
+  // not supported
+  void register_contact_bc(
+    stk::mesh::Part *part,
+    const stk::topology &theTopo,
+    const ContactBoundaryConditionData &contactBCData);
+
+  // not supported
+  void register_non_conformal_bc(
+    stk::mesh::Part *part,
+    const stk::topology &theTopo);
+
   // internal solve and update from EquationSystems
   void solve_and_update();
 
@@ -83,7 +95,10 @@ public:
   void initialize();
   void reinitialize_linear_system();
 
+  void deactivate_output();
+
   // names that customize this PNG system
+  EquationType eqType_;
   std::string dofName_;
   std::string deltaName_;
   std::string independentDofName_;
