@@ -84,8 +84,6 @@ AssembleNodeSolverAlgorithm::execute()
                              + SharedMemView<double*>::shmem_size(rhsSize)
                              + SharedMemView<stk::mesh::Entity*>::shmem_size(1) // connected nodes
                              + SharedMemView<int*>::shmem_size(1); // local ID scratch,
-  // For some reason using just sizeof(int) causes the localIDsScratch pointer to be NULL.
-  // Maybe there is some alignment requirement forcing the need for additional space?
 
   auto team_exec = get_team_policy(node_buckets.size(), bytes_per_team, bytes_per_thread);
 
