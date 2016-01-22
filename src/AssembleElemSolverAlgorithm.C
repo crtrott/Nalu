@@ -13,6 +13,7 @@
 #include <master_element/MasterElement.h>
 
 #include <FieldTypeDef.h>
+#include <KokkosInterface.h>
 #include <LinearSystem.h>
 #include <Realm.h>
 #include <SupplementalAlgorithm.h>
@@ -26,7 +27,6 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
-#include<Kokkos_Core.hpp>
 namespace sierra{
 namespace nalu{
 
@@ -72,12 +72,6 @@ AssembleElemSolverAlgorithm::execute()
   const int maxElementsPerBucket = 512;
   const int lhsSize = maxNodesPerElement*maxNodesPerElement*sizeOfSystem_*sizeOfSystem_;
   const int rhsSize = maxNodesPerElement*sizeOfSystem_;
-//  Kokkos::View<double******> lhs("lhsScratch", numWorkBuckets, maxElementsPerBucket,
-//      maxNodesPerElement, maxNodesPerElement, sizeOfSystem_, sizeOfSystem_);
-  Kokkos::View<double***, Kokkos::LayoutRight> lhsScratch("lhsScratch", numWorkBuckets, maxElementsPerBucket, lhsSize);
-  Kokkos::View<double***, Kokkos::LayoutRight> rhsScratch("rhsScratch", numWorkBuckets, maxElementsPerBucket, rhsSize);
-  Kokkos::View<stk::mesh::Entity***, Kokkos::LayoutRight> connectedNodesScratch("cnScratch", numWorkBuckets, maxElementsPerBucket, maxNodesPerElement);
-
 
   // supplemental algorithm size and setup
   const size_t supplementalAlgSize = supplementalAlg_.size();
@@ -88,73 +82,87 @@ AssembleElemSolverAlgorithm::execute()
   stk::mesh::Selector s_locally_owned_union = meta_data.locally_owned_part()
     &stk::mesh::selectUnion(partVec_);
 
-  typedef typename Kokkos::TeamPolicy<Kokkos::Serial>::member_type team_type;
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
-  for (unsigned bucketOffset = 0; bucketOffset < elem_buckets.size(); bucketOffset += numWorkBuckets)
-  {
-    const int bucketEnd = std::min(bucketOffset + numWorkBuckets, (unsigned int)elem_buckets.size());
-    Kokkos::parallel_for("Nalu::AssembleElemSolverAlgorithm::execute",
-        Kokkos::TeamPolicy<Kokkos::Serial>(bucketEnd-bucketOffset, Kokkos::AUTO), [&] (const team_type& team) {
-      const int ib = team.league_rank();
-      const stk::mesh::Bucket & b = *elem_buckets[bucketOffset+ib];
-      const stk::mesh::Bucket::size_type length   = b.size();
 
-      // extract master element
-      MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
-      MasterElement *meSCV = realm_.get_volume_master_element(b.topology());
+  const int bytes_per_team = 0;
+  const int bytes_per_thread =
+      SharedMemView<double *>::shmem_size(lhsSize) +
+      SharedMemView<double *>::shmem_size(rhsSize) +
+      SharedMemView<stk::mesh::Entity *>::shmem_size(maxNodesPerElement) +
+      SharedMemView<int *>::shmem_size(maxNodesPerElement);
+  auto team_exec = get_team_policy(elem_buckets.size(), bytes_per_team, bytes_per_thread);
 
-      // extract master element specifics
-      const int nodesPerElement = meSCS->nodesPerElement_;
+  Kokkos::parallel_for("Nalu::AssembleElemSolverAlgorithm::execute",
+     team_exec, [&] (const DeviceTeam & team) {
+    const int ib = team.league_rank();
+    const stk::mesh::Bucket & b = *elem_buckets[ib];
+    const stk::mesh::Bucket::size_type length   = b.size();
 
-      // KOKKOS this could be a critical region so that each team only executes this once instead of every thread
-      // TODO fix me travis/victor
-      Kokkos::single(Kokkos::PerTeam(team), [&] (){
+    // extract master element
+    MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
+    MasterElement *meSCV = realm_.get_volume_master_element(b.topology());
+
+    // extract master element specifics
+    const int nodesPerElement = meSCS->nodesPerElement_;
+
+    Kokkos::single(Kokkos::PerTeam(team), [&] (){
       // resize possible supplemental element alg
       for ( size_t i = 0; i < supplementalAlgSize; ++i )
         supplementalAlg_[i]->elem_resize(meSCS, meSCV);
-      });
-      team.team_barrier();
+    });
+    team.team_barrier();
 
-      Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
+    SharedMemView<stk::mesh::Entity*> connected_nodes_;
+    SharedMemView<double*> lhs_;
+    SharedMemView<double*> rhs_;
+    SharedMemView<int*> localIdsScratch;
+    {
+      connected_nodes_ = Kokkos::subview(
+          SharedMemView<stk::mesh::Entity**> (team.team_shmem(), team.team_size(), nodesPerElement),
+          team.team_rank(), Kokkos::ALL());
+      lhs_ = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), lhsSize),
+          team.team_rank(), Kokkos::ALL());
+      rhs_ = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), rhsSize),
+          team.team_rank(), Kokkos::ALL());
+      localIdsScratch = Kokkos::subview(
+          SharedMemView<int**> (team.team_shmem(), team.team_size(), nodesPerElement),
+          team.team_rank(), Kokkos::ALL());
+    }
 
-        // get element
-        stk::mesh::Entity element = b[k];
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
 
-        double * const p_lhs = &lhsScratch(ib,k,0);
-        double * const p_rhs = &rhsScratch(ib,k,0);
+      // get element
+      stk::mesh::Entity element = b[k];
 
-        stk::mesh::Entity * p_connected_nodes = &connectedNodesScratch(ib,k,0);
-        // extract node relations and provide connected nodes
-        stk::mesh::Entity const * node_rels = b.begin_nodes(k);
-        int num_nodes = b.num_nodes(k);
+      // extract node relations and provide connected nodes
+      stk::mesh::Entity const * node_rels = b.begin_nodes(k);
+      int num_nodes = b.num_nodes(k);
 
-        // sanity check on num nodes
+      // sanity check on num nodes
 //        ThrowAssert( num_nodes == nodesPerElement ); throws are bad
 
-        for ( int ni = 0; ni < num_nodes; ++ni ) {
-          stk::mesh::Entity node = node_rels[ni];
-          // set connected nodes
-          p_connected_nodes[ni] = node;
-        }
+      for ( int ni = 0; ni < num_nodes; ++ni ) {
+        stk::mesh::Entity node = node_rels[ni];
+        // set connected nodes
+        connected_nodes_(ni) = node;
+      }
 
-        for ( int i = 0; i < lhsSize; ++i )
-          p_lhs[i] = 0.0;
-        for ( int i = 0; i < rhsSize; ++i )
-          p_rhs[i] = 0.0;
+      for ( int i = 0; i < lhsSize; ++i )
+        lhs_(i) = 0.0;
+      for ( int i = 0; i < rhsSize; ++i )
+        rhs_(i) = 0.0;
 
-        // call supplemental; gathers happen inside the elem_execute method
-        for ( size_t i = 0; i < supplementalAlgSize; ++i )
-          supplementalAlg_[i]->elem_execute( p_lhs, p_rhs, element, meSCS, meSCV);
+      // call supplemental; gathers happen inside the elem_execute method
+      for ( size_t i = 0; i < supplementalAlgSize; ++i )
+        supplementalAlg_[i]->elem_execute(&lhs_(0), &rhs_(0), element, meSCS, meSCV);
 
-        /*auto connected_nodes = Kokkos::subview(connectedNodesScratch,ib,k,Kokkos::ALL());
-        auto rhs = Kokkos::subview(rhsScratch,ib,k,Kokkos::ALL());
-        auto lhs = Kokkos::subview(lhsScratch,ib,k,Kokkos::ALL());
-        apply_coeff(connected_nodes, rhs, lhs, __FILE__);*/
+      apply_coeff(connected_nodes_, rhs_, lhs_, localIdsScratch,  __FILE__);
 
-      });
     });
-  }
+  });
 }
 
 } // namespace nalu
