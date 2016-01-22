@@ -113,15 +113,22 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
 
-  const int bytes_per_team = maxNumScsIp * maxNodesPerElement * sizeof(double);
+  const int bytes_per_team = SharedMemView<double *>::shmem_size(maxNumScsIp * maxNodesPerElement);
   // TODO: This may substantially overestimate the scratch space needed depending on what
   // element types are actually present. We should investigate whether the cost of this matters
   // and if so consider the Aria approach where a separate algorithm is created per topology.
-  const int bytes_per_thread = (maxNodesPerElement + maxNodesPerElement + maxNodesPerElement*maxDim
-      + maxNumScsIp*maxDim + maxDim*maxNumScsIp*maxNodesPerElement * maxDim*maxNumScsIp*maxNodesPerElement
-      + maxNumScsIp + maxlhsSize + maxrhsSize)*sizeof(double)
-      + maxNodesPerElement * sizeof(stk::mesh::Entity)
-      + maxrhsSize*sizeof(int); // For TpetraLinearSystem::sumInto vector of localIds
+  const int bytes_per_thread =
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) +
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) +
+      SharedMemView<double *>::shmem_size(maxNodesPerElement*maxDim) +
+      SharedMemView<double *>::shmem_size(maxNumScsIp*maxDim) +
+      SharedMemView<double *>::shmem_size(maxDim*maxNumScsIp*maxNodesPerElement) +
+      SharedMemView<double *>::shmem_size(maxDim*maxNumScsIp*maxNodesPerElement) +
+      SharedMemView<double *>::shmem_size(maxNumScsIp) +
+      SharedMemView<double *>::shmem_size(maxlhsSize) +
+      SharedMemView<double *>::shmem_size(maxrhsSize) +
+      SharedMemView<stk::mesh::Entity *>::shmem_size(maxNodesPerElement) +
+      SharedMemView<int *>::shmem_size(maxrhsSize); // For TpetraLinearSystem::sumInto vector of localIds
 
   auto team_exec = get_team_policy(elem_buckets.size(), bytes_per_team, bytes_per_thread);
 
