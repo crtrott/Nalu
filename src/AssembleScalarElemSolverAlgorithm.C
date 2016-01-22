@@ -123,35 +123,37 @@ AssembleScalarElemSolverAlgorithm::execute()
   const double om_alphaUpw = 1.0-alphaUpw;
 
   // space for LHS/RHS; nodesPerElem*nodesPerElem* and nodesPerElem
-  std::vector<double> lhs;
-  std::vector<double> rhs;
-  std::vector<stk::mesh::Entity> connected_nodes;
 
   // supplemental algorithm setup
   const size_t supplementalAlgSize = supplementalAlg_.size();
   for ( size_t i = 0; i < supplementalAlgSize; ++i )
     supplementalAlg_[i]->setup();
 
-  // nodal fields to gather
-  std::vector<double> ws_vrtm;
-  std::vector<double> ws_coordinates;
-  std::vector<double> ws_scalarQNp1;
-  std::vector<double> ws_dqdx;
-  std::vector<double> ws_density;
-  std::vector<double> ws_diffFluxCoeff;
 
-  // geometry related to populate
-  std::vector<double> ws_scs_areav;
-  std::vector<double> ws_dndx;
-  std::vector<double> ws_deriv;
-  std::vector<double> ws_det_j;
-  std::vector<double> ws_shape_function;
-
-  // ip values
-  std::vector<double>coordIp(nDim);
-
-  // pointers
-  double *p_coordIp = &coordIp[0];
+  const int maxNodesPerElement = 8;
+  const int maxNumScsIp = 16;
+  const int maxLhsSize = maxNodesPerElement*maxNodesPerElement;
+  const int maxRhsSize = maxNodesPerElement;
+  const int bytes_per_team = SharedMemView<double *>::shmem_size(maxNumScsIp * maxNodesPerElement);
+  // TODO: This may substantially overestimate the scratch space needed depending on what
+  // element types are actually present. We should investigate whether the cost of this matters
+  // and if so consider the Aria approach where a separate algorithm is created per topology.
+  const int bytes_per_thread =
+      SharedMemView<double *>::shmem_size(maxLhsSize) + //lhs
+      SharedMemView<double *>::shmem_size(maxRhsSize) + //rhs
+      SharedMemView<double *>::shmem_size(maxNodesPerElement * nDim) + //ws_vrtm
+      SharedMemView<double *>::shmem_size(maxNodesPerElement * nDim) + //ws_coord
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) + //ws_scalarQNp1
+      SharedMemView<double *>::shmem_size(maxNodesPerElement * nDim) + //ws_dqdx
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) + //ws_density
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) + //ws_diffFluxCoeff
+      SharedMemView<double *>::shmem_size(maxNumScsIp * nDim) + //ws_scs_area_v
+      SharedMemView<double *>::shmem_size(maxNumScsIp * nDim * maxNodesPerElement) + //ws_dndx
+      SharedMemView<double *>::shmem_size(maxNumScsIp * nDim * maxNodesPerElement) + //ws_deriv
+      SharedMemView<double *>::shmem_size(maxNumScsIp) + //ws_detj
+      SharedMemView<double *>::shmem_size(nDim) + //coordIp
+      SharedMemView<stk::mesh::Entity *>::shmem_size(maxNodesPerElement) + //elements
+      SharedMemView<int *>::shmem_size(maxRhsSize); // For TpetraLinearSystem::sumInto vector of localIds
 
   // deal with state
   ScalarFieldType &scalarQNp1   = scalarQ_->field_of_state(stk::mesh::StateNP1);
@@ -164,262 +166,294 @@ AssembleScalarElemSolverAlgorithm::execute()
 
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
-  Kokkos::parallel_for("Nalu::AssembleScakarElemSolver",
-    Kokkos::RangePolicy<Kokkos::Serial>(0, elem_buckets.size()), [&] (const int& ib) {
-    const stk::mesh::Bucket & b = *elem_buckets[ib];
-    const stk::mesh::Bucket::size_type length   = b.size();
+  auto team_exec = get_team_policy(elem_buckets.size(), bytes_per_team, bytes_per_thread);
 
-    // extract master element
-    MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
-    MasterElement *meSCV = realm_.get_volume_master_element(b.topology());
+  Kokkos::parallel_for("Nalu::AssembleScalarElemDiffSolverAlgorithm::execute",
+      team_exec, [&] (const DeviceTeam & team) {
+      const int ib = team.league_rank();
+      stk::mesh::Bucket & b = *elem_buckets[ib];
+      const stk::mesh::Bucket::size_type length = b.size();
 
-    // extract master element specifics
-    const int nodesPerElement = meSCS->nodesPerElement_;
-    const int numScsIp = meSCS->numIntPoints_;
-    const int *lrscv = meSCS->adjacentNodes();
+      MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
+      MasterElement *meSCV = realm_.get_volume_master_element(b.topology());
 
-    // resize some things; matrix related
-    const int lhsSize = nodesPerElement*nodesPerElement;
-    const int rhsSize = nodesPerElement;
-    lhs.resize(lhsSize);
-    rhs.resize(rhsSize);
-    connected_nodes.resize(nodesPerElement);
+      const int nDim_ = nDim;
+      const int nodesPerElement = meSCS->nodesPerElement_;
+      const int numScsIp = meSCS->numIntPoints_;
+      const int rhsSize = nodesPerElement;
+      const int lhsSize = nodesPerElement*nodesPerElement;
 
-    // algorithm related
-    ws_vrtm.resize(nodesPerElement*nDim);
-    ws_coordinates.resize(nodesPerElement*nDim);
-    ws_dqdx.resize(nodesPerElement*nDim);
-    ws_scalarQNp1.resize(nodesPerElement);
-    ws_density.resize(nodesPerElement);
-    ws_diffFluxCoeff.resize(nodesPerElement);
-    ws_scs_areav.resize(numScsIp*nDim);
-    ws_dndx.resize(nDim*numScsIp*nodesPerElement);
-    ws_deriv.resize(nDim*numScsIp*nodesPerElement);
-    ws_det_j.resize(numScsIp);
-    ws_shape_function.resize(numScsIp*nodesPerElement);
+      SharedMemView<double**> ws_shape_function(team.team_shmem(), numScsIp, nodesPerElement);
 
-    // pointer to lhs/rhs
-    double *p_lhs = &lhs[0];
-    double *p_rhs = &rhs[0];
-    double *p_vrtm = &ws_vrtm[0];
-    double *p_coordinates = &ws_coordinates[0];
-    double *p_dqdx = &ws_dqdx[0];
-    double *p_scalarQNp1 = &ws_scalarQNp1[0];
-    double *p_density = &ws_density[0];
-    double *p_diffFluxCoeff = &ws_diffFluxCoeff[0];
-    double *p_scs_areav = &ws_scs_areav[0];
-    double *p_dndx = &ws_dndx[0];
-    double *p_shape_function = &ws_shape_function[0];
-
-    // extract shape function
-    meSCS->shape_fcn(&p_shape_function[0]);
-
-    // resize possible supplemental element alg
-    for ( size_t i = 0; i < supplementalAlgSize; ++i )
-      supplementalAlg_[i]->elem_resize(meSCS, meSCV);
-
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
-
-      // get elem
-      stk::mesh::Entity elem = b[k];
-
-      // zero lhs/rhs
-      for ( int p = 0; p < lhsSize; ++p )
-        p_lhs[p] = 0.0;
-      for ( int p = 0; p < rhsSize; ++p )
-        p_rhs[p] = 0.0;
-
-
-      // ip data for this element; scs and scv
-      const double *mdot = stk::mesh::field_data(*massFlowRate_, elem );
-
-      //===============================================
-      // gather nodal data; this is how we do it now..
-      //===============================================
-      stk::mesh::Entity const * node_rels = bulk_data.begin_nodes(elem);
-      int num_nodes = bulk_data.num_nodes(elem);
-
-      // sanity check on num nodes
-      ThrowAssert( num_nodes == nodesPerElement );
-
-      for ( int ni = 0; ni < num_nodes; ++ni ) {
-        stk::mesh::Entity node = node_rels[ni];
-
-        // set connected nodes
-        connected_nodes[ni] = node;
-
-        // pointers to real data
-        const double * vrtm   = stk::mesh::field_data(*velocityRTM_, node );
-        const double * coords = stk::mesh::field_data(*coordinates_, node );
-        const double * dq     = stk::mesh::field_data(*dqdx_, node );
-
-        // gather scalars
-        p_scalarQNp1[ni]    = *stk::mesh::field_data(scalarQNp1, node );
-        p_density[ni]       = *stk::mesh::field_data(densityNp1, node );
-        p_diffFluxCoeff[ni] = *stk::mesh::field_data(*diffFluxCoeff_, node );
-
-        // gather vectors
-        const int niNdim = ni*nDim;
-        for ( int i=0; i < nDim; ++i ) {
-          p_vrtm[niNdim+i] = vrtm[i];
-          p_coordinates[niNdim+i] = coords[i];
-          p_dqdx[niNdim+i] = dq[i];
-        }
+      SharedMemView<double*> lhs;
+      SharedMemView<double*> rhs;
+      SharedMemView<stk::mesh::Entity *> connected_nodes;
+      SharedMemView<double*> ws_vrtm;
+      SharedMemView<double*> ws_coordinates;
+      SharedMemView<double*> ws_scalarQNp1;
+      SharedMemView<double*> ws_dqdx;
+      SharedMemView<double*> ws_density;
+      SharedMemView<double*> ws_diffFluxCoeff;
+      SharedMemView<double*> ws_scs_areav;
+      SharedMemView<double*> ws_dndx;
+      SharedMemView<double*> ws_deriv;
+      SharedMemView<double*> ws_det_j;
+      SharedMemView<double*> coordIp;
+      SharedMemView<int*> localIdsScratch;
+      {
+        connected_nodes = Kokkos::subview(
+            SharedMemView<stk::mesh::Entity**> (team.team_shmem(), team.team_size(), nodesPerElement),
+            team.team_rank(), Kokkos::ALL());
+        lhs = Kokkos::subview(
+            SharedMemView<double**>(team.team_shmem(), team.team_size(), lhsSize),
+            team.team_rank(), Kokkos::ALL());
+        rhs = Kokkos::subview(
+            SharedMemView<double**>(team.team_shmem(), team.team_size(), rhsSize),
+            team.team_rank(), Kokkos::ALL());
+        ws_vrtm = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement*nDim),
+            team.team_rank(), Kokkos::ALL());
+        ws_coordinates = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement*nDim),
+            team.team_rank(), Kokkos::ALL());
+        ws_scalarQNp1 = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement),
+            team.team_rank(), Kokkos::ALL());
+        ws_dqdx = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement*nDim_),
+            team.team_rank(), Kokkos::ALL());
+        ws_density = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement),
+            team.team_rank(), Kokkos::ALL());
+        ws_diffFluxCoeff = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement),
+            team.team_rank(), Kokkos::ALL());
+        ws_scs_areav = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), numScsIp*nDim),
+            team.team_rank(), Kokkos::ALL());
+        ws_dndx = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), numScsIp*nodesPerElement*nDim),
+            team.team_rank(), Kokkos::ALL());
+        ws_deriv = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), numScsIp*nodesPerElement*nDim),
+            team.team_rank(), Kokkos::ALL());
+        ws_det_j = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), numScsIp),
+            team.team_rank(), Kokkos::ALL());
+        localIdsScratch = Kokkos::subview(
+            SharedMemView<int**> (team.team_shmem(), team.team_size(), rhsSize),
+            team.team_rank(), Kokkos::ALL());
+        coordIp = Kokkos::subview(
+            SharedMemView<double**> (team.team_shmem(), team.team_size(), nDim),
+            team.team_rank(), Kokkos::ALL());
       }
 
-      // compute geometry
-      double scs_error = 0.0;
-      meSCS->determinant(1, &p_coordinates[0], &p_scs_areav[0], &scs_error);
+      Kokkos::single(Kokkos::PerTeam(team), [&]() {
+        meSCS->shape_fcn(&ws_shape_function(0, 0));
+        for ( size_t i = 0; i < supplementalAlgSize; ++i )
+          supplementalAlg_[i]->elem_resize(meSCS, meSCV);
+      });
+      team.team_barrier();
+      auto lrscv = meSCS->adjacentNodes();
 
-      // compute dndx
-      meSCS->grad_op(1, &p_coordinates[0], &p_dndx[0], &ws_deriv[0], &ws_det_j[0], &scs_error);
+      Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
+        const stk::mesh::Entity elem = b[k];
 
-      for ( int ip = 0; ip < numScsIp; ++ip ) {
+        // zero lhs/rhs
+        for ( int p = 0; p < lhsSize; ++p )
+          lhs[p] = 0.0;
+        for ( int p = 0; p < rhsSize; ++p )
+          rhs[p] = 0.0;
 
-        // left and right nodes for this ip
-        const int il = lrscv[2*ip];
-        const int ir = lrscv[2*ip+1];
 
-        // corresponding matrix rows
-        const int rowL = il*nodesPerElement;
-        const int rowR = ir*nodesPerElement;
+        // ip data for this element; scs and scv
+        const double *mdot = stk::mesh::field_data(*massFlowRate_, elem );
 
-        // save off mdot
-        const double tmdot = mdot[ip];
+        //===============================================
+        // gather nodal data; this is how we do it now..
+        //===============================================
+        stk::mesh::Entity const * node_rels = bulk_data.begin_nodes(elem);
+        int num_nodes = bulk_data.num_nodes(elem);
 
-        // zero out values of interest for this ip
-        for ( int j = 0; j < nDim; ++j ) {
-          p_coordIp[j] = 0.0;
-        }
+        // sanity check on num nodes
+        ThrowAssert( num_nodes == nodesPerElement );
 
-        // save off ip values; offset to Shape Function
-        double rhoIp = 0.0;
-        double muIp = 0.0;
-        double qIp = 0.0;
-        const int offSetSF = ip*nodesPerElement;
-        for ( int ic = 0; ic < nodesPerElement; ++ic ) {
-          const double r = p_shape_function[offSetSF+ic];
-          rhoIp += r*p_density[ic];
-          muIp += r*p_diffFluxCoeff[ic];
-          qIp += r*p_scalarQNp1[ic];
-          // compute scs point values
-          for ( int i = 0; i < nDim; ++i ) {
-            p_coordIp[i] += r*p_coordinates[ic*nDim+i];
+        for ( int ni = 0; ni < num_nodes; ++ni ) {
+          stk::mesh::Entity node = node_rels[ni];
+
+          // set connected nodes
+          connected_nodes[ni] = node;
+
+          // pointers to real data
+          const double * vrtm   = stk::mesh::field_data(*velocityRTM_, node );
+          const double * coords = stk::mesh::field_data(*coordinates_, node );
+          const double * dq     = stk::mesh::field_data(*dqdx_, node );
+
+          // gather scalars
+          ws_scalarQNp1[ni]    = *stk::mesh::field_data(scalarQNp1, node );
+          ws_density[ni]       = *stk::mesh::field_data(densityNp1, node );
+          ws_diffFluxCoeff[ni] = *stk::mesh::field_data(*diffFluxCoeff_, node );
+
+          // gather vectors
+          const int niNdim = ni*nDim;
+          for ( int i=0; i < nDim; ++i ) {
+            ws_vrtm[niNdim+i] = vrtm[i];
+            ws_coordinates[niNdim+i] = coords[i];
+            ws_dqdx[niNdim+i] = dq[i];
           }
         }
 
-        // Peclet factor; along the edge
-        const double diffIp = 0.5*(p_diffFluxCoeff[il]/p_density[il]
-                                   + p_diffFluxCoeff[ir]/p_density[ir]);
-        double udotx = 0.0;
-        for(int j = 0; j < nDim; ++j ) {
-          const double dxj = p_coordinates[ir*nDim+j]-p_coordinates[il*nDim+j];
-          const double uj = 0.5*(p_vrtm[il*nDim+j] + p_vrtm[ir*nDim+j]);
-          udotx += uj*dxj;
-        }
-        const double pecfac = pecletFunction_->execute(std::abs(udotx)/(diffIp+small));
-        const double om_pecfac = 1.0-pecfac;
+        // compute geometry
+        double scs_error = 0.0;
+        meSCS->determinant(1, &ws_coordinates[0], &ws_scs_areav[0], &scs_error);
 
-        // left and right extrapolation
-        double dqL = 0.0;
-        double dqR = 0.0;
-        for(int j = 0; j < nDim; ++j ) {
-          const double dxjL = p_coordIp[j] - p_coordinates[il*nDim+j];
-          const double dxjR = p_coordinates[ir*nDim+j] - p_coordIp[j];
-          dqL += dxjL*p_dqdx[nDim*il+j];
-          dqR += dxjR*p_dqdx[nDim*ir+j];
-        }
+        // compute dndx
+        meSCS->grad_op(1, &ws_coordinates[0], &ws_dndx[0], &ws_deriv[0], &ws_det_j[0], &scs_error);
 
-        // add limiter if appropriate
-        double limitL = 1.0;
-        double limitR = 1.0;
-        if ( useLimiter ) {
-          const double dq = p_scalarQNp1[ir] - p_scalarQNp1[il];
-          const double dqMl = 2.0*2.0*dqL - dq;
-          const double dqMr = 2.0*2.0*dqR - dq;
-          limitL = van_leer(dqMl, dq, small);
-          limitR = van_leer(dqMr, dq, small);
-        }
-        
-        // extrapolated; for now limit (along edge is fine)
-        const double qIpL = p_scalarQNp1[il] + dqL*hoUpwind*limitL;
-        const double qIpR = p_scalarQNp1[ir] - dqR*hoUpwind*limitR;
+        for ( int ip = 0; ip < numScsIp; ++ip ) {
 
-        // assemble advection; rhs and upwind contributions
+          // left and right nodes for this ip
+          const int il = lrscv[2*ip];
+          const int ir = lrscv[2*ip+1];
 
-        // 2nd order central; simply qIp from above
+          // corresponding matrix rows
+          const int rowL = il*nodesPerElement;
+          const int rowR = ir*nodesPerElement;
 
-        // upwind
-        const double qUpwind = (tmdot > 0) ? alphaUpw*qIpL + om_alphaUpw*qIp
-            : alphaUpw*qIpR + om_alphaUpw*qIp;
+          // save off mdot
+          const double tmdot = mdot[ip];
 
-        // generalized central (2nd and 4th order)
-        const double qHatL = alpha*qIpL + om_alpha*qIp;
-        const double qHatR = alpha*qIpR + om_alpha*qIp;
-        const double qCds = 0.5*(qHatL + qHatR);
-
-        // total advection
-        const double aflux = tmdot*(pecfac*qUpwind + om_pecfac*qCds);
-
-        // right hand side; L and R
-        p_rhs[il] -= aflux;
-        p_rhs[ir] += aflux; 
-        
-        // advection operator sens; all but central
-
-        // upwind advection (includes 4th); left node
-        const double alhsfacL = 0.5*(tmdot+std::abs(tmdot))*pecfac*alphaUpw
-          + 0.5*alpha*om_pecfac*tmdot;
-        p_lhs[rowL+il] += alhsfacL;
-        p_lhs[rowR+il] -= alhsfacL;
-
-        // upwind advection; right node
-        const double alhsfacR = 0.5*(tmdot-std::abs(tmdot))*pecfac*alphaUpw
-          + 0.5*alpha*om_pecfac*tmdot;
-        p_lhs[rowR+ir] -= alhsfacR;
-        p_lhs[rowL+ir] += alhsfacR;
-
-        double qDiff = 0.0;
-        for ( int ic = 0; ic < nodesPerElement; ++ic ) {
-
-          // shape function
-          const double r = p_shape_function[offSetSF+ic];
-
-          // upwind (il/ir) handled above; collect terms on alpha and alphaUpw
-          const double lhsfacAdv = r*tmdot*(pecfac*om_alphaUpw + om_pecfac*om_alpha);
-
-          // advection operator lhs; rhs handled above
-          // lhs; il then ir
-          p_lhs[rowL+ic] += lhsfacAdv;
-          p_lhs[rowR+ic] -= lhsfacAdv;
-
-          // diffusion
-          double lhsfacDiff = 0.0;
-          const int offSetDnDx = nDim*nodesPerElement*ip + ic*nDim;
+          // zero out values of interest for this ip
           for ( int j = 0; j < nDim; ++j ) {
-            lhsfacDiff += -muIp*p_dndx[offSetDnDx+j]*p_scs_areav[ip*nDim+j];
+            coordIp[j] = 0.0;
           }
 
-          qDiff += lhsfacDiff*p_scalarQNp1[ic];
+          // save off ip values; offset to Shape Function
+          double rhoIp = 0.0;
+          double muIp = 0.0;
+          double qIp = 0.0;
+          for ( int ic = 0; ic < nodesPerElement; ++ic ) {
+            const double r = ws_shape_function(ip, ic);
+            rhoIp += r*ws_density[ic];
+            muIp += r*ws_diffFluxCoeff[ic];
+            qIp += r*ws_scalarQNp1[ic];
+            // compute scs point values
+            for ( int i = 0; i < nDim; ++i ) {
+              coordIp[i] += r*ws_coordinates[ic*nDim+i];
+            }
+          }
 
-          // lhs; il then ir
-          p_lhs[rowL+ic] += lhsfacDiff;
-          p_lhs[rowR+ic] -= lhsfacDiff;
+          // Peclet factor; along the edge
+          const double diffIp = 0.5*(ws_diffFluxCoeff[il]/ws_density[il]
+                                                                   + ws_diffFluxCoeff[ir]/ws_density[ir]);
+          double udotx = 0.0;
+          for(int j = 0; j < nDim; ++j ) {
+            const double dxj = ws_coordinates[ir*nDim+j]-ws_coordinates[il*nDim+j];
+            const double uj = 0.5*(ws_vrtm[il*nDim+j] + ws_vrtm[ir*nDim+j]);
+            udotx += uj*dxj;
+          }
+          const double pecfac = pecletFunction_->execute(std::abs(udotx)/(diffIp+small));
+          const double om_pecfac = 1.0-pecfac;
+
+          // left and right extrapolation
+          double dqL = 0.0;
+          double dqR = 0.0;
+          for(int j = 0; j < nDim; ++j ) {
+            const double dxjL = coordIp[j] - ws_coordinates[il*nDim+j];
+            const double dxjR = ws_coordinates[ir*nDim+j] - coordIp[j];
+            dqL += dxjL*ws_dqdx[nDim*il+j];
+            dqR += dxjR*ws_dqdx[nDim*ir+j];
+          }
+
+          // add limiter if appropriate
+          double limitL = 1.0;
+          double limitR = 1.0;
+          if ( useLimiter ) {
+            const double dq = ws_scalarQNp1[ir] - ws_scalarQNp1[il];
+            const double dqMl = 2.0*2.0*dqL - dq;
+            const double dqMr = 2.0*2.0*dqR - dq;
+            limitL = van_leer(dqMl, dq, small);
+            limitR = van_leer(dqMr, dq, small);
+          }
+
+          // extrapolated; for now limit (along edge is fine)
+          const double qIpL = ws_scalarQNp1[il] + dqL*hoUpwind*limitL;
+          const double qIpR = ws_scalarQNp1[ir] - dqR*hoUpwind*limitR;
+
+          // assemble advection; rhs and upwind contributions
+
+          // 2nd order central; simply qIp from above
+
+          // upwind
+          const double qUpwind = (tmdot > 0) ? alphaUpw*qIpL + om_alphaUpw*qIp
+              : alphaUpw*qIpR + om_alphaUpw*qIp;
+
+          // generalized central (2nd and 4th order)
+          const double qHatL = alpha*qIpL + om_alpha*qIp;
+          const double qHatR = alpha*qIpR + om_alpha*qIp;
+          const double qCds = 0.5*(qHatL + qHatR);
+
+          // total advection
+          const double aflux = tmdot*(pecfac*qUpwind + om_pecfac*qCds);
+
+          // right hand side; L and R
+          rhs[il] -= aflux;
+          rhs[ir] += aflux;
+
+          // advection operator sens; all but central
+
+          // upwind advection (includes 4th); left node
+          const double alhsfacL = 0.5*(tmdot+std::abs(tmdot))*pecfac*alphaUpw
+              + 0.5*alpha*om_pecfac*tmdot;
+          lhs[rowL+il] += alhsfacL;
+          lhs[rowR+il] -= alhsfacL;
+
+          // upwind advection; right node
+          const double alhsfacR = 0.5*(tmdot-std::abs(tmdot))*pecfac*alphaUpw
+              + 0.5*alpha*om_pecfac*tmdot;
+          lhs[rowR+ir] -= alhsfacR;
+          lhs[rowL+ir] += alhsfacR;
+
+          double qDiff = 0.0;
+          for ( int ic = 0; ic < nodesPerElement; ++ic ) {
+
+            // shape function
+            const double r = ws_shape_function(ip, ic);
+
+            // upwind (il/ir) handled above; collect terms on alpha and alphaUpw
+            const double lhsfacAdv = r*tmdot*(pecfac*om_alphaUpw + om_pecfac*om_alpha);
+
+            // advection operator lhs; rhs handled above
+            // lhs; il then ir
+            lhs[rowL+ic] += lhsfacAdv;
+            lhs[rowR+ic] -= lhsfacAdv;
+
+            // diffusion
+            double lhsfacDiff = 0.0;
+            const int offSetDnDx = nDim*nodesPerElement*ip + ic*nDim;
+            for ( int j = 0; j < nDim; ++j ) {
+              lhsfacDiff += -muIp*ws_dndx[offSetDnDx+j]*ws_scs_areav[ip*nDim+j];
+            }
+
+            qDiff += lhsfacDiff*ws_scalarQNp1[ic];
+
+            // lhs; il then ir
+            lhs[rowL+ic] += lhsfacDiff;
+            lhs[rowR+ic] -= lhsfacDiff;
+          }
+
+          // rhs; il then ir
+          rhs[il] -= qDiff;
+          rhs[ir] += qDiff;
+
         }
 
-        // rhs; il then ir
-        p_rhs[il] -= qDiff;
-        p_rhs[ir] += qDiff;
-        
-      }
+        // call supplemental
+        for ( size_t i = 0; i < supplementalAlgSize; ++i )
+          supplementalAlg_[i]->elem_execute( &lhs[0], &rhs[0], elem, meSCS, meSCV);
 
-      // call supplemental
-      for ( size_t i = 0; i < supplementalAlgSize; ++i )
-        supplementalAlg_[i]->elem_execute( &lhs[0], &rhs[0], elem, meSCS, meSCV);
-
-      apply_coeff(connected_nodes, rhs, lhs, __FILE__);
-
-    }
+        apply_coeff(connected_nodes, rhs, lhs, localIdsScratch, __FILE__);
+      });
   });
 }
 
