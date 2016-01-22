@@ -86,6 +86,12 @@ AssembleContinuityElemSolverAlgorithm::execute()
 
   const int nDim = meta_data.spatial_dimension();
 
+  const int maxElementsPerBucket = 512;
+  const int maxNodesPerElement = 8;
+  const int maxNumScsIp = 16;
+  const int maxlhsSize = maxNodesPerElement*maxNodesPerElement;
+  const int maxrhsSize = maxNodesPerElement;
+
   // time step
   const double dt = realm_.get_time_step();
   const double gamma1 = realm_.get_gamma1();
@@ -105,32 +111,6 @@ AssembleContinuityElemSolverAlgorithm::execute()
   for ( size_t i = 0; i < supplementalAlgSize; ++i )
     supplementalAlg_[i]->setup();
 
-  // nodal fields to gather
-  std::vector<double> ws_vrtm;
-  std::vector<double> ws_Gpdx;
-  std::vector<double> ws_coordinates;
-  std::vector<double> ws_pressure;
-  std::vector<double> ws_density;
-
-  // geometry related to populate
-  std::vector<double> ws_scs_areav;
-  std::vector<double> ws_dndx;
-  std::vector<double> ws_dndx_lhs;
-  std::vector<double> ws_deriv;
-  std::vector<double> ws_det_j;
-  std::vector<double> ws_shape_function;
-
-  // integration point data that depends on size
-  std::vector<double> uIp(nDim);
-  std::vector<double> rho_uIp(nDim);
-  std::vector<double> GpdxIp(nDim);
-  std::vector<double> dpdxIp(nDim);
-
-  // pointers to everyone...
-  double *p_uIp = &uIp[0];
-  double *p_rho_uIp = &rho_uIp[0];
-  double *p_GpdxIp = &GpdxIp[0];
-  double *p_dpdxIp = &dpdxIp[0];
 
   // deal with state
   ScalarFieldType &densityNp1 = density_->field_of_state(stk::mesh::StateNP1);
@@ -142,9 +122,38 @@ AssembleContinuityElemSolverAlgorithm::execute()
 
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
-  Kokkos::parallel_for("Nalu::AssembleContinuityElemSolver",
-    Kokkos::RangePolicy<Kokkos::Serial>(0, elem_buckets.size()), [&] (const int& ib) {
-    const stk::mesh::Bucket & b = *elem_buckets[ib];
+
+  const int bytes_per_team = SharedMemView<double *>::shmem_size(maxNumScsIp * maxNodesPerElement);
+  // TODO: This may substantially overestimate the scratch space needed depending on what
+  // element types are actually present. We should investigate whether the cost of this matters
+  // and if so consider the Aria approach where a separate algorithm is created per topology.
+  const int bytes_per_thread =
+      SharedMemView<double *>::shmem_size(maxNodesPerElement*nDim) + //ws_vrtm
+      SharedMemView<double *>::shmem_size(maxNodesPerElement*nDim) + //ws_Gpdx
+      SharedMemView<double *>::shmem_size(maxNodesPerElement*nDim) + //ws_coordinates
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) + //ws_pressure
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) + //ws_density
+      SharedMemView<double *>::shmem_size(maxNumScsIp*nDim) + //ws_scs_areav
+      SharedMemView<double *>::shmem_size(nDim*maxNumScsIp*maxNodesPerElement) + //ws_dndx
+      SharedMemView<double *>::shmem_size(nDim*maxNumScsIp*maxNodesPerElement) + //ws_dndx_lhs
+      SharedMemView<double *>::shmem_size(nDim*maxNumScsIp*maxNodesPerElement) + //ws_deriv
+      SharedMemView<double *>::shmem_size(maxNumScsIp) + //ws_detj
+      SharedMemView<double *>::shmem_size(nDim) + //uIp
+      SharedMemView<double *>::shmem_size(nDim) + //rho_uIp
+      SharedMemView<double *>::shmem_size(nDim) + //GpdxIp
+      SharedMemView<double *>::shmem_size(nDim) + //dpdxIp
+      SharedMemView<double *>::shmem_size(maxlhsSize) +
+      SharedMemView<double *>::shmem_size(maxrhsSize) +
+      SharedMemView<stk::mesh::Entity *>::shmem_size(maxNodesPerElement) +
+      SharedMemView<int *>::shmem_size(maxrhsSize); // For TpetraLinearSystem::sumInto vector of localIds
+
+  auto team_exec = get_team_policy(elem_buckets.size(), bytes_per_team, bytes_per_thread);
+
+  Kokkos::parallel_for("Nalu::AssembleContinuityElemSolverAlgorithm::execute",
+      team_exec, [&] (const DeviceTeam & team)
+  {
+    const int ib = team.league_rank();
+    stk::mesh::Bucket & b = *elem_buckets[ib];
     const stk::mesh::Bucket::size_type length   = b.size();
 
     // extract master element
@@ -159,64 +168,103 @@ AssembleContinuityElemSolverAlgorithm::execute()
     // resize some things; matrix related
     const int lhsSize = nodesPerElement*nodesPerElement;
     const int rhsSize = nodesPerElement;
-    lhs.resize(lhsSize);
-    rhs.resize(rhsSize);
-    connected_nodes.resize(nodesPerElement);
 
-    // algorithm related
-    ws_vrtm.resize(nodesPerElement*nDim);
-    ws_Gpdx.resize(nodesPerElement*nDim);
-    ws_coordinates.resize(nodesPerElement*nDim);
-    ws_pressure.resize(nodesPerElement);
-    ws_density.resize(nodesPerElement);
-    ws_scs_areav.resize(numScsIp*nDim);
-    ws_dndx.resize(nDim*numScsIp*nodesPerElement);
-    ws_dndx_lhs.resize(nDim*numScsIp*nodesPerElement);
-    ws_deriv.resize(nDim*numScsIp*nodesPerElement);
-    ws_det_j.resize(numScsIp);
-    ws_shape_function.resize(numScsIp*nodesPerElement);
+    SharedMemView<double**> ws_shape_function_(team.team_shmem(), numScsIp, nodesPerElement);
 
-    // pointers
-    double *p_lhs = &lhs[0];
-    double *p_rhs = &rhs[0];
-    double *p_vrtm = &ws_vrtm[0];
-    double *p_Gpdx = &ws_Gpdx[0];
-    double *p_coordinates = &ws_coordinates[0];
-    double *p_pressure = &ws_pressure[0];
-    double *p_density = &ws_density[0];
-    double *p_scs_areav = &ws_scs_areav[0];
-    double *p_dndx = &ws_dndx[0];
-    double *p_dndx_lhs = shiftPoisson_ ? &ws_dndx[0] : reducedSensitivities_ ? &ws_dndx_lhs[0] : &ws_dndx[0];
-    double *p_shape_function = &ws_shape_function[0];
+    // These are the per-thread handles. Better interface being worked on by Kokkos.
+    SharedMemView<stk::mesh::Entity*> connected_nodes;
+    SharedMemView<double*> lhs;
+    SharedMemView<double*> rhs;
+    SharedMemView<int*> localIdsScratch;
+    SharedMemView<double*> ws_vrtm;
+    SharedMemView<double*> ws_Gpdx;
+    SharedMemView<double*> ws_coordinates;
+    SharedMemView<double*> ws_pressure;
+    SharedMemView<double*> ws_density;
+    SharedMemView<double*> ws_scs_areav;
+    SharedMemView<double*> ws_dndx;
+    SharedMemView<double*> ws_dndx_lhs;
+    SharedMemView<double*> ws_deriv;
+    SharedMemView<double*> ws_det_j;
+    SharedMemView<double*> uIp(team.team_shmem(), nDim);
+    SharedMemView<double*> rho_uIp(team.team_shmem(), nDim);
+    SharedMemView<double*> GpdxIp(team.team_shmem(), nDim);
+    SharedMemView<double*> dpdxIp(team.team_shmem(), nDim);
+    {
+      lhs = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), lhsSize),
+          team.team_rank(), Kokkos::ALL());
+      rhs = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), rhsSize),
+          team.team_rank(), Kokkos::ALL());
+      connected_nodes = Kokkos::subview(
+          SharedMemView<stk::mesh::Entity**> (team.team_shmem(), team.team_size(), nodesPerElement),
+          team.team_rank(), Kokkos::ALL());
+      ws_vrtm = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), nodesPerElement*nDim),
+          team.team_rank(), Kokkos::ALL());
+      ws_Gpdx = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), nodesPerElement*nDim),
+          team.team_rank(), Kokkos::ALL());
+      ws_coordinates = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), nodesPerElement*nDim),
+          team.team_rank(), Kokkos::ALL());
+      ws_pressure = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), nodesPerElement),
+          team.team_rank(), Kokkos::ALL());
+      ws_density = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), nodesPerElement),
+          team.team_rank(), Kokkos::ALL());
+      ws_scs_areav = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), numScsIp*nDim),
+          team.team_rank(), Kokkos::ALL());
+      ws_dndx = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), numScsIp*nDim*nodesPerElement),
+          team.team_rank(), Kokkos::ALL());
+      ws_dndx_lhs = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), numScsIp*nDim*nodesPerElement),
+          team.team_rank(), Kokkos::ALL());
+      ws_deriv = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), numScsIp*nDim*nodesPerElement),
+          team.team_rank(), Kokkos::ALL());
+      ws_det_j = Kokkos::subview(
+          SharedMemView<double**>(team.team_shmem(), team.team_size(), numScsIp),
+          team.team_rank(), Kokkos::ALL());
+        localIdsScratch = Kokkos::subview(
+            SharedMemView<int**> (team.team_shmem(), team.team_size(), rhsSize),
+            team.team_rank(), Kokkos::ALL());
 
-    if ( shiftMdot_)
-      meSCS->shifted_shape_fcn(&p_shape_function[0]);
-    else
-      meSCS->shape_fcn(&p_shape_function[0]);
+    }
 
-    // resize possible supplemental element alg
-    for ( size_t i = 0; i < supplementalAlgSize; ++i )
-      supplementalAlg_[i]->elem_resize(meSCS, meSCV);
 
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
+    Kokkos::single(Kokkos::PerTeam(team), [&]()
+    {
+      if ( shiftMdot_)
+        meSCS->shifted_shape_fcn(&ws_shape_function_(0, 0));
+      else
+        meSCS->shape_fcn(&ws_shape_function_(0, 0));
 
-      // get elem
-      stk::mesh::Entity elem = b[k];
+      // resize possible supplemental element alg
+      for ( size_t i = 0; i < supplementalAlgSize; ++i )
+        supplementalAlg_[i]->elem_resize(meSCS, meSCV);
+    });
 
+    team.team_barrier();
+
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k)
+    {
+      const stk::mesh::Entity elem = b[k];
       // zero lhs/rhs
       for ( int p = 0; p < lhsSize; ++p )
-        p_lhs[p] = 0.0;
+        lhs[p] = 0.0;
       for ( int p = 0; p < rhsSize; ++p )
-        p_rhs[p] = 0.0;
+        rhs[p] = 0.0;
 
       //===============================================
       // gather nodal data; this is how we do it now..
       //===============================================
       stk::mesh::Entity const *  node_rels = b.begin_nodes(k);
       int num_nodes = b.num_nodes(k);
-
-      // sanity check on num nodes
-      ThrowAssert( num_nodes == nodesPerElement );
 
       for ( int ni = 0; ni < num_nodes; ++ni ) {
         stk::mesh::Entity node = node_rels[ni];
@@ -230,31 +278,32 @@ AssembleContinuityElemSolverAlgorithm::execute()
         const double * vrtm   = stk::mesh::field_data(*velocityRTM_, node );
 
         // gather scalars
-        p_pressure[ni] = *stk::mesh::field_data(*pressure_, node );
-        p_density[ni]  = *stk::mesh::field_data(densityNp1, node );
+        ws_pressure[ni] = *stk::mesh::field_data(*pressure_, node );
+        ws_density[ni]  = *stk::mesh::field_data(densityNp1, node );
 
         // gather vectors
         const int niNdim = ni*nDim;
         for ( int j=0; j < nDim; ++j ) {
-          p_vrtm[niNdim+j] = vrtm[j];
-          p_Gpdx[niNdim+j] = Gjp[j];
-          p_coordinates[niNdim+j] = coords[j];
+          ws_vrtm[niNdim+j] = vrtm[j];
+          ws_Gpdx[niNdim+j] = Gjp[j];
+          ws_coordinates[niNdim+j] = coords[j];
         }
       }
 
       // compute geometry
       double scs_error = 0.0;
-      meSCS->determinant(1, &p_coordinates[0], &p_scs_areav[0], &scs_error);
+      meSCS->determinant(1, &ws_coordinates[0], &ws_scs_areav[0], &scs_error);
 
       // compute dndx for residual
       if ( shiftPoisson_ )
-        meSCS->shifted_grad_op(1, &p_coordinates[0], &p_dndx[0], &ws_deriv[0], &ws_det_j[0], &scs_error);
+        meSCS->shifted_grad_op(1, &ws_coordinates[0], &ws_dndx[0], &ws_deriv[0], &ws_det_j[0], &scs_error);
       else
-        meSCS->grad_op(1, &p_coordinates[0], &p_dndx[0], &ws_deriv[0], &ws_det_j[0], &scs_error);
-      
+        meSCS->grad_op(1, &ws_coordinates[0], &ws_dndx[0], &ws_deriv[0], &ws_det_j[0], &scs_error);
+
       // compute dndx for LHS
+      auto p_dndx_lhs = shiftPoisson_ ? &ws_dndx[0] : reducedSensitivities_ ? &ws_dndx_lhs[0] : &ws_dndx[0];
       if ( !shiftPoisson_ && reducedSensitivities_ )
-        meSCS->shifted_grad_op(1, &p_coordinates[0], &p_dndx_lhs[0], &ws_deriv[0], &ws_det_j[0], &scs_error);
+        meSCS->shifted_grad_op(1, &ws_coordinates[0], &p_dndx_lhs[0], &ws_deriv[0], &ws_det_j[0], &scs_error);
 
       for ( int ip = 0; ip < numScsIp; ++ip ) {
 
@@ -268,59 +317,57 @@ AssembleContinuityElemSolverAlgorithm::execute()
 
         // setup for ip values; sneak in geometry for possible reduced sens
         for ( int j = 0; j < nDim; ++j ) {
-          p_uIp[j] = 0.0;
-          p_rho_uIp[j] = 0.0;
-          p_GpdxIp[j] = 0.0;
-          p_dpdxIp[j] = 0.0;
+          uIp[j] = 0.0;
+          rho_uIp[j] = 0.0;
+          GpdxIp[j] = 0.0;
+          dpdxIp[j] = 0.0;
         }
         double rhoIp = 0.0;
 
-        const int offSet = ip*nodesPerElement;
         for ( int ic = 0; ic < nodesPerElement; ++ic ) {
 
-          const double r = p_shape_function[offSet+ic];
-          const double nodalPressure = p_pressure[ic];
-          const double nodalRho = p_density[ic];
+          const double r = ws_shape_function_(ip, ic);
+          const double nodalPressure = ws_pressure[ic];
+          const double nodalRho = ws_density[ic];
 
           rhoIp += r*nodalRho;
 
           double lhsfac = 0.0;
           const int offSetDnDx = nDim*nodesPerElement*ip + ic*nDim;
           for ( int j = 0; j < nDim; ++j ) {
-            p_GpdxIp[j] += r*p_Gpdx[nDim*ic+j];
-            p_uIp[j] += r*p_vrtm[nDim*ic+j];
-            p_rho_uIp[j] += r*nodalRho*p_vrtm[nDim*ic+j];
-            p_dpdxIp[j] += p_dndx[offSetDnDx+j]*nodalPressure;
-            lhsfac += -p_dndx_lhs[offSetDnDx+j]*p_scs_areav[ip*nDim+j];
+            GpdxIp[j] += r*ws_Gpdx[nDim*ic+j];
+            uIp[j] += r*ws_vrtm[nDim*ic+j];
+            rho_uIp[j] += r*nodalRho*ws_vrtm[nDim*ic+j];
+            dpdxIp[j] += ws_dndx[offSetDnDx+j]*nodalPressure;
+            lhsfac += -p_dndx_lhs[offSetDnDx+j]*ws_scs_areav[ip*nDim+j];
           }
 
           // assemble to lhs; left
-          p_lhs[rowL+ic] += lhsfac;
+          lhs[rowL+ic] += lhsfac;
 
           // assemble to lhs; right
-          p_lhs[rowR+ic] -= lhsfac;
+          lhs[rowR+ic] -= lhsfac;
 
         }
 
         // assemble mdot
         double mdot = 0.0;
         for ( int j = 0; j < nDim; ++j ) {
-          mdot += (interpTogether*p_rho_uIp[j] + om_interpTogether*rhoIp*p_uIp[j] 
-                   - projTimeScale*(p_dpdxIp[j] - p_GpdxIp[j]))*p_scs_areav[ip*nDim+j];
+          mdot += (interpTogether*rho_uIp[j] + om_interpTogether*rhoIp*uIp[j]
+                                                                               - projTimeScale*(dpdxIp[j] - GpdxIp[j]))*ws_scs_areav[ip*nDim+j];
         }
 
         // residual; left and right
-        p_rhs[il] -= mdot/projTimeScale;
-        p_rhs[ir] += mdot/projTimeScale;
+        rhs[il] -= mdot/projTimeScale;
+        rhs[ir] += mdot/projTimeScale;
       }
 
       // call supplemental
       for ( size_t i = 0; i < supplementalAlgSize; ++i )
         supplementalAlg_[i]->elem_execute( &lhs[0], &rhs[0], elem, meSCS, meSCV);
 
-      apply_coeff(connected_nodes, rhs, lhs, __FILE__);
-
-    }
+      apply_coeff(connected_nodes, rhs, lhs, localIdsScratch, __FILE__);
+    });
   });
 }
 
