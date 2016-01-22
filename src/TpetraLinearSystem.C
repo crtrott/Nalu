@@ -41,6 +41,7 @@
 #include <stk_mesh/base/FieldParallel.hpp>
 
 // For Tpetra support
+#include <Kokkos_Serial.hpp>
 #include <Teuchos_ArrayRCP.hpp>
 #include <Teuchos_DefaultMpiComm.hpp>
 #include <Teuchos_OrdinalTraits.hpp>
@@ -275,6 +276,7 @@ TpetraLinearSystem::beginLinearSystemConstruction()
   // Next, grab all the global ids, owned first, then globallyOwned.
   totalGids_.clear();
   totalGids_.reserve(numNodes * numDof_);
+
   // Also, we'll build up our own local id map. Note: first we number
   // the owned nodes then we number the globallyOwned nodes.
   LocalOrdinal localId = 0;
@@ -312,7 +314,7 @@ TpetraLinearSystem::beginLinearSystemConstruction()
       }
   });
   ThrowRequire(localId == numOwnedNodes);
-
+  
   // now globallyOwned:
   //KOKKOS: BucketLoop noparallel push_back globally_owned_nodes (std::vector)
   Kokkos::parallel_for("Nalu::TpetraLinearSystem::beginLinearSystemConstructionC",
@@ -334,21 +336,19 @@ TpetraLinearSystem::beginLinearSystemConstruction()
   std::sort(globally_owned_nodes.begin(), globally_owned_nodes.end(), CompareEntityById(bulkData, realm_.naluGlobalId_) );
 
   //KOKKOS: Loop noparallel push_back totalGids_ (std::vector)
-  for (unsigned inode=0; inode < globally_owned_nodes.size(); ++inode)
-    {
-      const stk::mesh::Entity entity = globally_owned_nodes[inode];
-      const stk::mesh::EntityId naluId = *stk::mesh::field_data(*realm_.naluGlobalId_, entity);
-      myLIDs_[naluId] = localId++;
-      //KOKKOS: NestedLoop noparallel push_back totalGids_ (std::vector)
-      for(unsigned idof=0; idof < numDof_; ++ idof) {
-        const GlobalOrdinal gid = GID_(naluId, numDof_, idof);
-        totalGids_.push_back(gid);
-      }
+  for (unsigned inode=0; inode < globally_owned_nodes.size(); ++inode) {
+    const stk::mesh::Entity entity = globally_owned_nodes[inode];
+    const stk::mesh::EntityId naluId = *stk::mesh::field_data(*realm_.naluGlobalId_, entity);
+    myLIDs_[naluId] = localId++;
+    for(unsigned idof=0; idof < numDof_; ++ idof) {
+      const GlobalOrdinal gid = GID_(naluId, numDof_, idof);
+      totalGids_.push_back(gid);
     }
-
+  }
+  
   if (localId != numNodes) {
       std::cout << "P[" << p_rank << "] error localId= " << localId << " numNodes= " << numNodes << " numOwnedNodes= " << numOwnedNodes << " numGloballyOwnedNotLocallyOwned= " << numGloballyOwnedNotLocallyOwned << std::endl;
-    }
+  }
   ThrowRequire(localId == numNodes);
 
   const int numOwnedRows = numOwnedNodes * numDof_;
@@ -1237,6 +1237,7 @@ TpetraLinearSystem::loadComplete()
   Teuchos::RCP<Teuchos::ParameterList> params = Teuchos::parameterList ();
   params->set("No Nonlocal Changes", true);
   bool do_params=false;
+
   if (do_params)
     globallyOwnedMatrix_->fillComplete(params);
   else

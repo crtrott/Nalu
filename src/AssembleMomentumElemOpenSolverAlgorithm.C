@@ -11,9 +11,9 @@
 #include <EquationSystem.h>
 #include <FieldTypeDef.h>
 #include <LinearSystem.h>
+#include <PecletFunction.h>
 #include <Realm.h>
 #include <SolutionOptions.h>
-#include <TimeIntegrator.h>
 #include <master_element/MasterElement.h>
 
 // stk_mesh/base/fem
@@ -40,7 +40,8 @@ AssembleMomentumElemOpenSolverAlgorithm::AssembleMomentumElemOpenSolverAlgorithm
   stk::mesh::Part *part,
   EquationSystem *eqSystem)
   : SolverAlgorithm(realm, part, eqSystem),
-    includeDivU_(realm_.get_divU())
+    includeDivU_(realm_.get_divU()),
+    pecletFunction_(NULL)
 {
   // save off fields
   stk::mesh::MetaData & meta_data = realm_.meta_data();
@@ -54,6 +55,9 @@ AssembleMomentumElemOpenSolverAlgorithm::AssembleMomentumElemOpenSolverAlgorithm
   exposedAreaVec_ = meta_data.get_field<GenericFieldType>(meta_data.side_rank(), "exposed_area_vector");
   openMassFlowRate_ = meta_data.get_field<GenericFieldType>(meta_data.side_rank(), "open_mass_flow_rate");
   velocityBc_ = meta_data.get_field<VectorFieldType>(stk::topology::NODE_RANK, "open_velocity_bc");
+
+  // create the peclet blending function
+  pecletFunction_ = eqSystem->create_peclet_function(velocity_->name());
 }
 
 //--------------------------------------------------------------------------
@@ -63,6 +67,14 @@ void
 AssembleMomentumElemOpenSolverAlgorithm::initialize_connectivity()
 {
   eqSystem_->linsys_->buildFaceElemToNodeGraph(partVec_);
+}
+
+//--------------------------------------------------------------------------
+//-------- destructor ------------------------------------------------------
+//--------------------------------------------------------------------------
+AssembleMomentumElemOpenSolverAlgorithm::~AssembleMomentumElemOpenSolverAlgorithm()
+{
+  delete pecletFunction_;
 }
 
 //--------------------------------------------------------------------------
@@ -81,7 +93,6 @@ AssembleMomentumElemOpenSolverAlgorithm::execute()
 
   // extract user advection options (allow to potentially change over time)
   const std::string dofName = "velocity";
-  const double hybridFactor = realm_.get_hybrid_factor(dofName);
   const double alphaUpw = realm_.get_alpha_upw_factor(dofName);
   const double hoUpwind = realm_.get_upw_factor(dofName);
   
@@ -357,8 +368,7 @@ AssembleMomentumElemOpenSolverAlgorithm::execute()
         }
 
         const double diffIp = 0.5*(viscL/densL + viscR/densR);
-        double pecfac = hybridFactor*udotx/(diffIp+small);
-        pecfac = pecfac*pecfac/(5.0 + pecfac*pecfac);
+        const double pecfac = pecletFunction_->execute(std::abs(udotx)/(diffIp+small));
         const double om_pecfac = 1.0-pecfac;
 
         //================================

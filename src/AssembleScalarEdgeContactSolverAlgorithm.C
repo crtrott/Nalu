@@ -16,6 +16,7 @@
 #include <FieldTypeDef.h>
 #include <HaloInfo.h>
 #include <LinearSystem.h>
+#include <PecletFunction.h>
 #include <Realm.h>
 #include <TimeIntegrator.h>
 
@@ -52,7 +53,8 @@ AssembleScalarEdgeContactSolverAlgorithm::AssembleScalarEdgeContactSolverAlgorit
     scalarQ_(scalarQ),
     dqdx_(dqdx),
     diffFluxCoeff_(diffFluxCoeff),
-    meshVelocity_(NULL)
+    meshVelocity_(NULL),
+    pecletFunction_(NULL)
 {
   // save off fields
   stk::mesh::MetaData & meta_data = realm_.meta_data();
@@ -63,6 +65,9 @@ AssembleScalarEdgeContactSolverAlgorithm::AssembleScalarEdgeContactSolverAlgorit
   density_ = meta_data.get_field<ScalarFieldType>(stk::topology::NODE_RANK, "density");
   haloMdot_ = meta_data.get_field<ScalarFieldType>(stk::topology::NODE_RANK, "halo_mdot");
 
+  // create the peclet blending function
+  pecletFunction_ = eqSystem->create_peclet_function(scalarQ_->name());
+
   // populate fieldVec; no state
   ghostFieldVec_.push_back(scalarQ_);
   ghostFieldVec_.push_back(dqdx_);
@@ -71,7 +76,14 @@ AssembleScalarEdgeContactSolverAlgorithm::AssembleScalarEdgeContactSolverAlgorit
   // with state
   ghostFieldVec_.push_back(&(velocity_->field_of_state(stk::mesh::StateNP1)));
   ghostFieldVec_.push_back(&(density_->field_of_state(stk::mesh::StateNP1)));
+}
 
+//--------------------------------------------------------------------------
+//-------- destructor ------------------------------------------------------
+//--------------------------------------------------------------------------
+AssembleScalarEdgeContactSolverAlgorithm::~AssembleScalarEdgeContactSolverAlgorithm()
+{
+  delete pecletFunction_;
 }
 
 //--------------------------------------------------------------------------
@@ -99,7 +111,6 @@ AssembleScalarEdgeContactSolverAlgorithm::execute()
 
   // extract user advection options (allow to potentially change over time)
   const std::string dofName = scalarQ_->name();
-  const double hybridFactor = realm_.get_hybrid_factor(dofName);
   const double alpha = realm_.get_alpha_factor(dofName);
   const double alphaUpw = realm_.get_alpha_upw_factor(dofName);
   const double hoUpwind = realm_.get_upw_factor(dofName);
@@ -291,8 +302,7 @@ AssembleScalarEdgeContactSolverAlgorithm::execute()
       const double diffIp = 0.5*(diffFluxCoeffL/densityL + diffFluxCoeffR/densityR);
 
       // Peclet factor
-      double pecfac = hybridFactor*udotx/(diffIp+small);
-      pecfac = pecfac*pecfac/(5.0 + pecfac*pecfac);
+      const double pecfac = pecletFunction_->execute(std::abs(udotx)/(diffIp+small));
       const double om_pecfac = 1.0-pecfac;
 
       // left and right extrapolation; add in diffusion calc

@@ -34,6 +34,9 @@ SolutionOptions::SolutionOptions()
     turbScDefault_(1.0),
     turbPrDefault_(1.0),
     nocDefault_(true),
+    pecletFunctionalFormDefault_("classic"),
+    pecletTanhTransDefault_(2.0),
+    pecletTanhWidthDefault_(4.0),
     referenceDensity_(0.0),
     referenceTemperature_(298.0),
     thermalExpansionCoeff_(1.0),
@@ -68,7 +71,10 @@ SolutionOptions::SolutionOptions()
     ncAlgDetailedOutput_(false),
     cvfemShiftMdot_(false),
     cvfemShiftPoisson_(false),
-    cvfemReducedSensPoisson_(false)
+    cvfemReducedSensPoisson_(false),
+    inputVariablesRestorationTime_(1.0e8),
+    consistentMMPngDefault_(false),
+    useConsolidatedSolverAlg_(false)
 {
   // nothing to do
 }
@@ -123,6 +129,17 @@ SolutionOptions::load(const YAML::Node & y_node)
     if ( cvfemReducedSensPoisson_)
       NaluEnv::self().naluOutputP0() << "Reduced sensitivities CVFEM Poisson" << std::endl;
 
+    // sanity checks; if user asked for shifted Poisson, then user will have reduced sensitivities
+    if ( cvfemShiftPoisson_ ) {
+      if ( !cvfemReducedSensPoisson_) {
+        NaluEnv::self().naluOutputP0() << "Reduced sensitivities CVFEM Poisson will be set" << std::endl;
+        cvfemReducedSensPoisson_ = true;
+      }
+    }
+
+    // check for consolidated solver alg (AssembleSolver)
+    get_if_present(*y_solution_options, "use_consolidated_solver_algorithm", useConsolidatedSolverAlg_, useConsolidatedSolverAlg_);
+
     // extract turbulence model; would be nice if we could parse an enum..
     std::string specifiedTurbModel;
     std::string defaultTurbModel = "laminar";
@@ -139,6 +156,9 @@ SolutionOptions::load(const YAML::Node & y_node)
     }
     // initialize turbuelnce constants since some laminar models may need such variables, e.g., kappa
     initialize_turbulence_constants();
+
+    // extract possible copy from input fields restoration time
+    get_if_present(*y_solution_options, "input_variables_from_file_restoration_time", inputVariablesRestorationTime_, inputVariablesRestorationTime_);
 
     // first set of options; hybrid, source, etc.
     const YAML::Node *y_options = expect_sequence(*y_solution_options, "options", required);
@@ -201,8 +221,8 @@ SolutionOptions::load(const YAML::Node & y_node)
           std::map<std::string, double> turbConstMap;
           y_option["turbulence_model_constants"] >> turbConstMap;
           // iterate the parsed map
-	  std::map<std::string, double>::iterator it;
-	  for ( it = turbConstMap.begin(); it!= turbConstMap.end(); ++it ) {
+          std::map<std::string, double>::iterator it;
+          for ( it = turbConstMap.begin(); it!= turbConstMap.end(); ++it ) {
             std::string theConstName = it->first;
             double theConstValue = it->second;
             // find the enum and set the value
@@ -261,6 +281,18 @@ SolutionOptions::load(const YAML::Node & y_node)
             if ( !foundIt )
               NaluEnv::self().naluOutputP0() << "Cound not find: " << algTypeString << std::endl;
           }
+        }
+        else if (expect_map( y_option, "peclet_function_form", optional)) {
+          y_option["peclet_function_form"] >> pecletFunctionalFormMap_;
+        }
+        else if (expect_map( y_option, "peclet_function_tanh_transition", optional)) {
+          y_option["peclet_function_tanh_transition"] >> pecletFunctionTanhTransMap_;
+        }
+        else if (expect_map( y_option, "peclet_function_tanh_width", optional)) {
+          y_option["peclet_function_tanh_width"] >> pecletFunctionTanhWidthMap_;
+        }
+        else if (expect_map( y_option, "consistent_mass_matrix_png", optional)) {
+          y_option["consistent_mass_matrix_png"] >> consistentMassMatrixPngMap_;
         }
         else {
           if (!NaluEnv::self().parallel_rank())
@@ -472,7 +504,7 @@ SolutionOptions::initialize_turbulence_constants()
   turbModelConstantMap_[TM_sigmaWTwo] = 0.856;
   turbModelConstantMap_[TM_cmuCs] = 0.17;
   turbModelConstantMap_[TM_Cw] = 0.325;
-  
+  turbModelConstantMap_[TM_CbTwo] = 0.35;
 }
 
 } // namespace nalu
