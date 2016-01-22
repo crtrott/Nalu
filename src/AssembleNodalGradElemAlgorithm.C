@@ -22,7 +22,7 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
-#include <Kokkos_Core.hpp>
+#include <KokkosInterface.h>
 
 namespace sierra{
 namespace nalu{
@@ -33,7 +33,7 @@ private:
   //Bucket and Element Data
   const stk::mesh::Bucket & b_;
   MasterElement & meSCS_;
-  Kokkos::View<const double **, Kokkos::LayoutRight> shape_function_;
+  SharedMemView<const double **> shape_function_;
 
   //InputFields
   ScalarFieldType & scalarQ_;
@@ -51,7 +51,7 @@ private:
 
 public:
   nodalGradientElem(const stk::mesh::Bucket & b, MasterElement & meSCS,
-      Kokkos::View<const double **, Kokkos::LayoutRight> p_shape_function,
+      SharedMemView<const double **> p_shape_function,
       ScalarFieldType & scalarQ, VectorFieldType & dqdx,
       ScalarFieldType & dualNodalVolume, VectorFieldType & coordinates,
       int nDim):
@@ -192,13 +192,8 @@ AssembleNodalGradElemAlgorithm::execute()
   stk::mesh::MetaData & meta_data = realm_.meta_data();
 
   const int nDim = meta_data.spatial_dimension();
-  const int numWorkBuckets = 32;
   const int maxNumScsIp = 12;
   const int maxNodesPerElement = 8;
-  // Create a View for scratch space to store the shape function for each bucket
-  // that will potentially be operated on in parallel.
-  Kokkos::View<double ***, Kokkos::LayoutRight> ws_shape_function("wsShapeFcn",
-      numWorkBuckets, maxNumScsIp, maxNodesPerElement);
 
   // define some common selectors
   stk::mesh::Selector s_locally_owned_union = meta_data.locally_owned_part()
@@ -208,51 +203,51 @@ AssembleNodalGradElemAlgorithm::execute()
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
 
-  typedef typename Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>::member_type team_type;
+  const int bytes_per_team = SharedMemView<double **>::shmem_size(maxNumScsIp, maxNodesPerElement);
+  const int bytes_per_thread = 0;
+  auto team_exec = get_team_policy(elem_buckets.size(), bytes_per_team, bytes_per_thread);
 
-  // Here we apply hierarchical parallelism. At the outer level we allow up to
-  // numWorkBuckets to be operated on in parallel. Each bucket will be operated
+  // Here we apply hierarchical parallelism. Each bucket will be operated
   // on by a team of threads. The actual number of teams that will be run in parallel
   // and number of threads in a team will be determined by Kokkos depending on the
   // architecture and resources available at runtime.
-  const int numBuckets = elem_buckets.size();
-  for(int bucketOffset = 0; bucketOffset < numBuckets; bucketOffset += numWorkBuckets)
-  {
-    const int bucketsThisPass = std::min(numWorkBuckets, numBuckets - bucketOffset);
-    Kokkos::parallel_for("Nalu::AssembleNodalGradElemAlgorithm::execute()",
-      Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>(bucketsThisPass, Kokkos::AUTO()), [&](team_type team) {
-        // Everything between here and the next parallel_for will be executed by every thread
-        // in the team.
+  Kokkos::parallel_for("Nalu::AssembleNodalGradElemAlgorithm::execute()",
+    team_exec, [&](const DeviceTeam & team) {
+      // Everything between here and the next parallel_for will be executed by every thread
+      // in the team.
 
-        // Determine which bucket of elements this team is operating on.
-        const int ib = team.league_rank();
-        const stk::mesh::Bucket & b = *elem_buckets[ib + bucketOffset];
-        const auto length = b.size();
+      // Determine which bucket of elements this team is operating on.
+      const int ib = team.league_rank();
+      const stk::mesh::Bucket & b = *elem_buckets[ib];
+      const auto length = b.size();
 
-        // Populate the shape function scratch space for this bucket
-        // Maybe this should only be done by the 0th thread in the team?
-        MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
-        const int nodesPerElement = meSCS->nodesPerElement_;
-        const int numScsIp = meSCS->numIntPoints_;
+      SharedMemView<double **> ws_shape_function(team.team_shmem(), maxNumScsIp, maxNodesPerElement);
+
+      // Populate the shape function scratch space for this bucket
+      MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
+      const int nodesPerElement = meSCS->nodesPerElement_;
+      const int numScsIp = meSCS->numIntPoints_;
+
+      Kokkos::single(Kokkos::PerTeam(team), [&]() {
         if ( useShifted_ )
-          meSCS->shifted_shape_fcn(&ws_shape_function(ib, 0, 0));
+          meSCS->shifted_shape_fcn(&ws_shape_function(0, 0));
         else
-          meSCS->shape_fcn(&ws_shape_function(ib, 0, 0));
+          meSCS->shape_fcn(&ws_shape_function(0, 0));
+      });
+      team.team_barrier();
 
-        // Create the functor that each thread in the team will run on the elements it
-        // is given to work on. Use a subview of the shape function scratch space that
-        // only provides the shape functions for this bucket to the functor.
-        auto bucket_shape_function = Kokkos::subview(ws_shape_function, ib, Kokkos::ALL(), Kokkos::ALL());
-        nodalGradientElem nodeGradFunctor(b, *meSCS, bucket_shape_function,
-            *scalarQ_, *dqdx_, *dualNodalVolume_, *coordinates_, nDim);
+      // Create the functor that each thread in the team will run on the elements it
+      // is given to work on. Use a subview of the shape function scratch space that
+      // only provides the shape functions for this bucket to the functor.
+      nodalGradientElem nodeGradFunctor(b, *meSCS, ws_shape_function,
+          *scalarQ_, *dqdx_, *dualNodalVolume_, *coordinates_, nDim);
 
-        // This is the second level of parallelism, every element within the bucket
-        // is potentially operated on in parallel by a single thread within the team.
-        Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
-          nodeGradFunctor(k);
-        });
-    });
-  }
+      // This is the second level of parallelism, every element within the bucket
+      // is potentially operated on in parallel by a single thread within the team.
+      Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
+        nodeGradFunctor(k);
+      });
+  });
 }
 
 
