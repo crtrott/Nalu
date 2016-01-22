@@ -25,8 +25,8 @@ using DeviceTeam = DeviceTeamPolicy::member_type;
 inline DeviceTeamPolicy get_team_policy(const size_t sz, const size_t bytes_per_team,
     const size_t bytes_per_thread)
 {
-  return DeviceTeamPolicy(sz, Kokkos::AUTO,
-      Kokkos::Experimental::TeamScratchRequest<DeviceShmem>(bytes_per_team, bytes_per_thread));
+  DeviceTeamPolicy policy(sz, Kokkos::AUTO);
+  return policy.set_scratch_size(0, Kokkos::PerTeam(bytes_per_team), Kokkos::PerThread(bytes_per_thread));
 }
 
 }
