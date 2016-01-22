@@ -80,7 +80,6 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
 
   const int nDim = meta_data.spatial_dimension();
 
-  const int maxElementsPerBucket = 512;
   const int maxNodesPerElement = 8;
   const int maxNumScsIp = 16;
   const int maxDim = 3;

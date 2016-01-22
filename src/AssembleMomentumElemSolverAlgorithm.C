@@ -25,6 +25,8 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
+#include <KokkosInterface.h>
+
 namespace sierra{
 namespace nalu{
 
@@ -129,56 +131,10 @@ AssembleMomentumElemSolverAlgorithm::execute()
   const double om_alpha = 1.0-alpha;
   const double om_alphaUpw = 1.0-alphaUpw;
 
-  // space for LHS/RHS; nodesPerElem*nDim*nodesPerElem*nDim and nodesPerElem*nDim
-  std::vector<double> lhs;
-  std::vector<double> rhs;
-  std::vector<stk::mesh::Entity> connected_nodes;
-
   // supplemental algorithm setup
   const size_t supplementalAlgSize = supplementalAlg_.size();
   for ( size_t i = 0; i < supplementalAlgSize; ++i )
     supplementalAlg_[i]->setup();
-
-  // nodal fields to gather
-  std::vector<double> ws_velocityNp1;
-  std::vector<double> ws_vrtm;
-  std::vector<double> ws_coordinates;
-  std::vector<double> ws_dudx;
-  std::vector<double> ws_densityNp1;
-  std::vector<double> ws_viscosity;
-
-  // geometry related to populate
-  std::vector<double> ws_scs_areav;
-  std::vector<double> ws_dndx;
-  std::vector<double> ws_deriv;
-  std::vector<double> ws_det_j;
-  std::vector<double> ws_shape_function;
-
-  // ip values
-  std::vector<double>uIp(nDim);
-
-  // extrapolated value from the L/R direction 
-  std::vector<double>uIpL(nDim);
-  std::vector<double>uIpR(nDim);
-  // limiter values from the L/R direction, 0:1
-  std::vector<double> limitL(nDim,1.0); 
-  std::vector<double> limitR(nDim,1.0);
-  // extrapolated gradient from L/R direction
-  std::vector<double> duL(nDim);
-  std::vector<double> duR(nDim);
- 
-  // coords
-  std::vector<double>coordIp(nDim);
-
-  // pointers for fast access
-  double *p_uIp = &uIp[0];
-  double *p_uIpL = &uIpL[0];
-  double *p_uIpR = &uIpR[0];
-  double *p_limitL = &limitL[0];
-  double *p_limitR = &limitR[0];
-  double *p_duL = &duL[0];
-  double *p_duR = &duR[0];
-  double *p_coordIp = &coordIp[0];
 
   // deal with state
   VectorFieldType &velocityNp1 = velocity_->field_of_state(stk::mesh::StateNP1);
@@ -192,55 +148,43 @@ AssembleMomentumElemSolverAlgorithm::execute()
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
 
-  int maxNodesPerElement = 0;
-  int minNodesPerElement = 2000000000;
-  int maxNumScsIp = 0;
-  int minNodesPerEleement = 2000000000;
-
-  Kokkos::parallel_for("Nalu::AssembleMomentumElemSolver::FindMax",
-    Kokkos::RangePolicy<Kokkos::Serial>(0, elem_buckets.size()), [&] (const int& ib) {
-    const stk::mesh::Bucket & b = *elem_buckets[ib];
-
-    const stk::mesh::Bucket::size_type length   = b.size();
-
-    // extract master element
-    MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
-    MasterElement *meSCV = realm_.get_volume_master_element(b.topology());
-
-    // extract master element specifics
-    const int nodesPerElement = meSCS->nodesPerElement_;
-    const int numScsIp = meSCS->numIntPoints_;
-
-    if( nodesPerElement > maxNodesPerElement ) maxNodesPerElement = nodesPerElement;
-    if( numScsIp > maxNumScsIp ) maxNumScsIp = numScsIp;
-  });
-
-  // algorithm related
-  ws_velocityNp1.resize(maxNodesPerElement*nDim);
-  ws_vrtm.resize(maxNodesPerElement*nDim);
-  ws_coordinates.resize(maxNodesPerElement*nDim);
-  ws_dudx.resize(maxNodesPerElement*nDim*nDim);
-  ws_densityNp1.resize(maxNodesPerElement);
-  ws_viscosity.resize(maxNodesPerElement);
-  ws_scs_areav.resize(maxNumScsIp*nDim);
-  ws_dndx.resize(nDim*maxNumScsIp*maxNodesPerElement);
-  ws_deriv.resize(nDim*maxNumScsIp*maxNodesPerElement);
-  ws_det_j.resize(maxNumScsIp);
-  ws_shape_function.resize(maxNumScsIp*maxNodesPerElement);
-
-  // resize some things; matrix related
+  // TODO: Do a parallel_reduce pass to determine the maxes needed.
+  const int maxNodesPerElement = 8;
+  const int maxNumScsIp = 16;
   const int lhsSize = maxNodesPerElement*nDim*maxNodesPerElement*nDim;
   const int rhsSize = maxNodesPerElement*nDim;
-  lhs.resize(lhsSize);
-  rhs.resize(rhsSize);
-  connected_nodes.resize(maxNodesPerElement);
 
-  int max_num_nodes = 0;
-  int min_num_nodes = 2000000000;
-  int max_lenth = 0;
-  int min_length = 2000000000;
+  const int bytes_per_team =
+      SharedMemView<double **>::shmem_size(maxNumScsIp, maxNodesPerElement);
+  const int bytes_per_thread =
+      SharedMemView<double **>::shmem_size(maxNodesPerElement, nDim) +
+      SharedMemView<double **>::shmem_size(maxNodesPerElement, nDim) +
+      SharedMemView<double **>::shmem_size(maxNodesPerElement, nDim) +
+      SharedMemView<double ***>::shmem_size(maxNodesPerElement, nDim, nDim) +
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) +
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) +
+      SharedMemView<double **>::shmem_size(maxNumScsIp, nDim) +
+      SharedMemView<double ***>::shmem_size(nDim, maxNumScsIp, maxNodesPerElement) +
+      SharedMemView<double ***>::shmem_size(nDim, maxNumScsIp, maxNodesPerElement) +
+      SharedMemView<double *>::shmem_size(maxNumScsIp) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(lhsSize) +
+      SharedMemView<double *>::shmem_size(rhsSize) +
+      SharedMemView<int *>::shmem_size(rhsSize) +
+      SharedMemView<stk::mesh::Entity *>::shmem_size(maxNodesPerElement);
+
+  auto team_exec = get_team_policy(elem_buckets.size(), bytes_per_team, bytes_per_thread);
+
   Kokkos::parallel_for("Nalu::AssembleMomentumElemSolver",
-    Kokkos::RangePolicy<Kokkos::Serial>(0, elem_buckets.size()), [&] (const int& ib) {
+    team_exec, [&] (const DeviceTeam & team) {
+    const int ib = team.league_rank();
     const stk::mesh::Bucket & b = *elem_buckets[ib];
 
     const stk::mesh::Bucket::size_type length   = b.size();
@@ -254,40 +198,140 @@ AssembleMomentumElemSolverAlgorithm::execute()
     const int numScsIp = meSCS->numIntPoints_;
     const int *lrscv = meSCS->adjacentNodes();
 
+    SharedMemView<double **> ws_shape_function(team.team_shmem(), numScsIp, nodesPerElement);
 
-    // pointer to lhs/rhs
-    double *p_lhs = &lhs[0];
-    double *p_rhs = &rhs[0];
-    double *p_velocityNp1 = &ws_velocityNp1[0];
-    double *p_vrtm = &ws_vrtm[0];
-    double *p_coordinates = &ws_coordinates[0];
-    double *p_dudx = &ws_dudx[0];
-    double *p_densityNp1 = &ws_densityNp1[0];
-    double *p_viscosity = &ws_viscosity[0];
-    double *p_scs_areav = &ws_scs_areav[0];
-    double *p_dndx = &ws_dndx[0];
-    double *p_shape_function = &ws_shape_function[0];
+    Kokkos::single( Kokkos::PerTeam(team), [&]() {
+      // extract shape function
+      if ( useShifted )
+        meSCS->shifted_shape_fcn(&ws_shape_function(0, 0));
+      else
+        meSCS->shape_fcn(&ws_shape_function(0, 0));
 
-    // extract shape function
-    if ( useShifted )
-      meSCS->shifted_shape_fcn(&p_shape_function[0]);
-    else
-      meSCS->shape_fcn(&p_shape_function[0]);
+      // resize possible supplemental element alg
+      for ( size_t i = 0; i < supplementalAlgSize; ++i )
+        supplementalAlg_[i]->elem_resize(meSCS, meSCV);
+    });
+    team.team_barrier();
 
-    // resize possible supplemental element alg
-    for ( size_t i = 0; i < supplementalAlgSize; ++i )
-      supplementalAlg_[i]->elem_resize(meSCS, meSCV);
+    SharedMemView<double **> ws_velocityNp1;
+    SharedMemView<double **> ws_vrtm;
+    SharedMemView<double **> ws_coordinates;
+    SharedMemView<double **> ws_dudx; // Should be 3D view but there appears to be a bug in the subview assignment from 4D to 3D
+    SharedMemView<double *> ws_densityNp1;
+    SharedMemView<double *> ws_viscosity;
+    SharedMemView<double **> ws_scs_areav;
+    SharedMemView<double **> ws_dndx; // Should be 3D view but there appears to be a bug in the subview assignment from 4D to 3D
+    SharedMemView<double **> ws_deriv; // Should be 3D view but there appears to be a bug in the subview assignment from 4D to 3D
+    SharedMemView<double *> ws_det_j;
 
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
+    // ip values
+    SharedMemView<double *> uIp;
+    // extrapolated value from the L/R direction
+    SharedMemView<double *> uIpL;
+    SharedMemView<double *> uIpR;
+    // limiter values from the L/R direction, 0:1
+    SharedMemView<double *> limitL;
+    SharedMemView<double *> limitR;
+    // extrapolated gradient from L/R direction
+    SharedMemView<double *> duL;
+    SharedMemView<double *> duR;
 
+    SharedMemView<double *> coordIp;
+
+    SharedMemView<double *> lhs;
+    SharedMemView<double *> rhs;
+    SharedMemView<stk::mesh::Entity *> connected_nodes;
+    SharedMemView<int *> localIdsScratch;
+    {
+      ws_velocityNp1 = Kokkos::subview(
+          SharedMemView<double ***> (team.team_shmem(), team.team_size(), nodesPerElement, nDim),
+          team.team_rank(), Kokkos::ALL(), Kokkos::ALL());
+      ws_vrtm = Kokkos::subview(
+          SharedMemView<double ***> (team.team_shmem(), team.team_size(), nodesPerElement, nDim),
+          team.team_rank(), Kokkos::ALL(), Kokkos::ALL());
+      ws_coordinates = Kokkos::subview(
+          SharedMemView<double ***> (team.team_shmem(), team.team_size(), nodesPerElement, nDim),
+          team.team_rank(), Kokkos::ALL(), Kokkos::ALL());
+      ws_dudx = Kokkos::subview(
+          SharedMemView<double ***> (team.team_shmem(), team.team_size(), nodesPerElement, nDim * nDim),
+          team.team_rank(), Kokkos::ALL(), Kokkos::ALL());
+      ws_densityNp1 = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), nodesPerElement),
+          team.team_rank(), Kokkos::ALL());
+      ws_viscosity = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), nodesPerElement),
+          team.team_rank(), Kokkos::ALL());
+      ws_scs_areav = Kokkos::subview(
+          SharedMemView<double ***> (team.team_shmem(), team.team_size(), numScsIp, nDim),
+          team.team_rank(), Kokkos::ALL(), Kokkos::ALL());
+      ws_dndx = Kokkos::subview(
+          SharedMemView<double ***> (team.team_shmem(), team.team_size(), numScsIp, nodesPerElement * nDim),
+          team.team_rank(), Kokkos::ALL(), Kokkos::ALL());
+      ws_deriv = Kokkos::subview(
+          SharedMemView<double ***> (team.team_shmem(), team.team_size(), numScsIp, nodesPerElement * nDim),
+          team.team_rank(), Kokkos::ALL(), Kokkos::ALL());
+      ws_det_j = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), numScsIp),
+          team.team_rank(), Kokkos::ALL());
+
+      // ip values
+      uIp = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), nDim),
+          team.team_rank(), Kokkos::ALL());
+      // extrapolated value from the L/R direction
+      uIpL = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), nDim),
+          team.team_rank(), Kokkos::ALL());
+      uIpR = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), nDim),
+          team.team_rank(), Kokkos::ALL());
+      // limiter values from the L/R direction, 0:1
+      limitL = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), nDim),
+          team.team_rank(), Kokkos::ALL());
+      limitR = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), nDim),
+          team.team_rank(), Kokkos::ALL());
+      // extrapolated gradient from L/R direction
+      duL = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), nDim),
+          team.team_rank(), Kokkos::ALL());
+      duR = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), nDim),
+          team.team_rank(), Kokkos::ALL());
+
+      coordIp = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), nDim),
+          team.team_rank(), Kokkos::ALL());
+
+      lhs = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), lhsSize),
+          team.team_rank(), Kokkos::ALL());
+      rhs = Kokkos::subview(
+          SharedMemView<double **> (team.team_shmem(), team.team_size(), rhsSize),
+          team.team_rank(), Kokkos::ALL());
+      connected_nodes = Kokkos::subview(
+          SharedMemView<stk::mesh::Entity **> (team.team_shmem(), team.team_size(), nodesPerElement),
+          team.team_rank(), Kokkos::ALL());
+      localIdsScratch = Kokkos::subview(
+          SharedMemView<int **> (team.team_shmem(), team.team_size(), rhsSize),
+          team.team_rank(), Kokkos::ALL());
+    }
+
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
       // get elem
-      stk::mesh::Entity elem = b[k];
+      const stk::mesh::Entity elem = b[k];
 
       // zero lhs/rhs
       for ( int p = 0; p < lhsSize; ++p )
-        p_lhs[p] = 0.0;
+        lhs[p] = 0.0;
       for ( int p = 0; p < rhsSize; ++p )
-        p_rhs[p] = 0.0;
+        rhs[p] = 0.0;
+
+      for ( int d = 0; d < nDim; ++d ) {
+        limitL(d) = 1.;
+        limitR(d) = 1.;
+      }
 
       // ip data for this element; scs and scv
       const double *mdot = stk::mesh::field_data(*massFlowRate_, b, k );
@@ -299,7 +343,7 @@ AssembleMomentumElemSolverAlgorithm::execute()
       int num_nodes = b.num_nodes(k);
 
       // sanity check on num nodes
-      ThrowAssert( num_nodes == nodesPerElement );
+      //ThrowAssert( num_nodes == nodesPerElement );
 
       for ( int ni = 0; ni < num_nodes; ++ni ) {
         stk::mesh::Entity node = node_rels[ni];
@@ -316,32 +360,28 @@ AssembleMomentumElemSolverAlgorithm::execute()
         const double mu       = *stk::mesh::field_data(*viscosity_, node);
 
         // gather scalars
-        p_densityNp1[ni] = rhoNp1;
-        p_viscosity[ni] = mu;
+        ws_densityNp1[ni] = rhoNp1;
+        ws_viscosity[ni] = mu;
 
-        // gather vectors
-        const int niNdim = ni*nDim;
-
-        // row for p_dudx
-        const int row_p_dudx = niNdim*nDim;
         for ( int i=0; i < nDim; ++i ) {
-          p_velocityNp1[niNdim+i] = uNp1[i];
-          p_vrtm[niNdim+i] = vrtm[i];
-          p_coordinates[niNdim+i] = coords[i];
+          ws_velocityNp1(ni, i) = uNp1[i];
+          ws_vrtm(ni, i) = vrtm[i];
+          ws_coordinates(ni, i) = coords[i];
           // gather tensor
           const int row_dudx = i*nDim;
           for ( int j=0; j < nDim; ++j ) {
-            p_dudx[row_p_dudx+row_dudx+j] = du[row_dudx+j];
+            ws_dudx(ni, i*nDim + j) = du[row_dudx+j];
           }
         }
       }
 
       // compute geometry
       double scs_error = 0.0;
-      meSCS->determinant(1, &p_coordinates[0], &p_scs_areav[0], &scs_error);
+      meSCS->determinant(1, &ws_coordinates(0, 0), &ws_scs_areav(0, 0), &scs_error);
 
       // compute dndx
-      meSCS->grad_op(1, &p_coordinates[0], &p_dndx[0], &ws_deriv[0], &ws_det_j[0], &scs_error);
+      meSCS->grad_op(1, &ws_coordinates(0, 0), &ws_dndx(0, 0), &ws_deriv(0, 0),
+          &ws_det_j(0), &scs_error);
 
       for ( int ip = 0; ip < numScsIp; ++ip ) {
 
@@ -362,88 +402,85 @@ AssembleMomentumElemSolverAlgorithm::execute()
 
         // zero out values of interest for this ip
         for ( int j = 0; j < nDim; ++j ) {
-          p_uIp[j] = 0.0;
-          p_coordIp[j] = 0.0;
+          uIp[j] = 0.0;
+          coordIp[j] = 0.0;
         }
 
         // compute scs point values; offset to Shape Function; sneak in divU
         double muIp = 0.0;
         double divU = 0.0;
         for ( int ic = 0; ic < nodesPerElement; ++ic ) {
-          const double r = p_shape_function[offSetSF+ic];
-          muIp += r*p_viscosity[ic];
-          const int offSetDnDx = nDim*nodesPerElement*ip + ic*nDim;
+          const double r = ws_shape_function(ip, ic);
+          muIp += r*ws_viscosity[ic];
           for ( int j = 0; j < nDim; ++j ) {
-            p_coordIp[j] += r*p_coordinates[ic*nDim+j];
-            const double uj = p_velocityNp1[ic*nDim+j];
-            p_uIp[j] += r*uj;
-            divU += uj*p_dndx[offSetDnDx+j];
+            coordIp[j] += r*ws_coordinates(ic, j);
+            const double uj = ws_velocityNp1(ic, j);
+            uIp[j] += r*uj;
+            divU += uj*ws_dndx(ip, ic*nDim + j);
           }
         }
 
         // udotx; left and right extrapolation
         double udotx = 0.0;
-        const int row_p_dudxL = il*nDim*nDim;
-        const int row_p_dudxR = ir*nDim*nDim;
         for (int i = 0; i < nDim; ++i ) {
           // udotx
-          const double dxi = p_coordinates[irNdim+i]-p_coordinates[ilNdim+i];
-          const double ui = 0.5*(p_vrtm[ilNdim+i] + p_vrtm[irNdim+i]);
+          const double dxi = ws_coordinates(ir, i)-ws_coordinates(il, i);
+          const double ui = 0.5*(ws_vrtm(il, i) + ws_vrtm(ir, i));
           udotx += ui*dxi;
           // extrapolation du
-          p_duL[i] = 0.0;
-          p_duR[i] = 0.0;
+          duL[i] = 0.0;
+          duR[i] = 0.0;
           for(int j = 0; j < nDim; ++j ) {
-            const double dxjL = p_coordIp[j] - p_coordinates[ilNdim+j];
-            const double dxjR = p_coordinates[irNdim+j] - p_coordIp[j];
-            p_duL[i] += dxjL*p_dudx[row_p_dudxL+i*nDim+j];
-            p_duR[i] += dxjR*p_dudx[row_p_dudxR+i*nDim+j];
+            const double dxjL = coordIp[j] - ws_coordinates(il, j);
+            const double dxjR = ws_coordinates(ir, j) - coordIp[j];
+            duL[i] += dxjL*ws_dudx(il, i*nDim + j);
+            duR[i] += dxjR*ws_dudx(ir, i*nDim + j);
           }
         }
 
         // Peclet factor; along the edge is fine
-        const double diffIp = 0.5*(p_viscosity[il]/p_densityNp1[il]
-                                   + p_viscosity[ir]/p_densityNp1[ir]);
+        const double diffIp = 0.5*(ws_viscosity[il]/ws_densityNp1[il]
+                                   + ws_viscosity[ir]/ws_densityNp1[ir]);
         const double pecfac = pecletFunction_->execute(std::abs(udotx)/(diffIp+small));
         const double om_pecfac = 1.0-pecfac;
 	
         // determine limiter if applicable
         if ( useLimiter ) {
           for ( int i = 0; i < nDim; ++i ) {
-            const double dq = p_velocityNp1[irNdim+i] - p_velocityNp1[ilNdim+i];
-            const double dqMl = 2.0*2.0*p_duL[i] - dq;
-            const double dqMr = 2.0*2.0*p_duR[i] - dq;
-            p_limitL[i] = van_leer(dqMl, dq, small);
-            p_limitR[i] = van_leer(dqMr, dq, small);
+            const double dq = ws_velocityNp1(ir, i) - ws_velocityNp1(il, i);
+            const double dqMl = 2.0*2.0*duL[i] - dq;
+            const double dqMr = 2.0*2.0*duR[i] - dq;
+            limitL[i] = van_leer(dqMl, dq, small);
+            limitR[i] = van_leer(dqMr, dq, small);
           }
         }
 	
         // final upwind extrapolation; with limiter
         for ( int i = 0; i < nDim; ++i ) {
-          p_uIpL[i] = p_velocityNp1[ilNdim+i] + p_duL[i]*hoUpwind*p_limitL[i];
-          p_uIpR[i] = p_velocityNp1[irNdim+i] - p_duR[i]*hoUpwind*p_limitR[i];
+          uIpL[i] = ws_velocityNp1(il, i) + duL[i]*hoUpwind*limitL[i];
+          uIpR[i] = ws_velocityNp1(ir, i) - duR[i]*hoUpwind*limitR[i];
         }
 
         // assemble advection; rhs and upwind contributions; add in divU stress (explicit)
         for ( int i = 0; i < nDim; ++i ) {
 
           // 2nd order central
-          const double uiIp = p_uIp[i];
+          const double uiIp = uIp[i];
 
           // upwind
-          const double uiUpwind = (tmdot > 0) ? alphaUpw*p_uIpL[i] + (om_alphaUpw)*uiIp
-            : alphaUpw*p_uIpR[i] + (om_alphaUpw)*uiIp;
+          const double uiUpwind = (tmdot > 0) ? alphaUpw*uIpL[i] + (om_alphaUpw)*uiIp
+            : alphaUpw*uIpR[i] + (om_alphaUpw)*uiIp;
 
           // generalized central (2nd and 4th order)
-          const double uiHatL = alpha*p_uIpL[i] + om_alpha*uiIp;
-          const double uiHatR = alpha*p_uIpR[i] + om_alpha*uiIp;
+          const double uiHatL = alpha*uIpL[i] + om_alpha*uiIp;
+          const double uiHatR = alpha*uIpR[i] + om_alpha*uiIp;
           const double uiCds = 0.5*(uiHatL + uiHatR);
 
           // total advection; pressure contribution in time term
           const double aflux = tmdot*(pecfac*uiUpwind + om_pecfac*uiCds);
 
           // divU stress term
-          const double divUstress = 2.0/3.0*muIp*divU*p_scs_areav[ipNdim+i]*includeDivU_;
+          const double divUstress = 2.0/3.0*muIp*divU*ws_scs_areav(ip, i)*includeDivU_;
 
           const int indexL = ilNdim + i;
           const int indexR = irNdim + i;
@@ -457,22 +494,22 @@ AssembleMomentumElemSolverAlgorithm::execute()
           const int rRiL_i = rowR+ilNdim+i;
 
           // right hand side; L and R
-          p_rhs[indexL] -= aflux + divUstress;
-          p_rhs[indexR] += aflux + divUstress;
+          rhs[indexL] -= aflux + divUstress;
+          rhs[indexR] += aflux + divUstress;
 
           // advection operator sens; all but central
 
           // upwind advection (includes 4th); left node
           const double alhsfacL = 0.5*(tmdot+std::abs(tmdot))*pecfac*alphaUpw
             + 0.5*alpha*om_pecfac*tmdot;
-          p_lhs[rLiL_i] += alhsfacL;
-          p_lhs[rRiL_i] -= alhsfacL;
+          lhs[rLiL_i] += alhsfacL;
+          lhs[rRiL_i] -= alhsfacL;
 
           // upwind advection (includes 4th); right node
           const double alhsfacR = 0.5*(tmdot-std::abs(tmdot))*pecfac*alphaUpw
             + 0.5*alpha*om_pecfac*tmdot;
-          p_lhs[rRiR_i] -= alhsfacR;
-          p_lhs[rLiR_i] += alhsfacR;
+          lhs[rRiR_i] -= alhsfacR;
+          lhs[rLiR_i] += alhsfacR;
 
         }
 
@@ -481,7 +518,7 @@ AssembleMomentumElemSolverAlgorithm::execute()
           const int icNdim = ic*nDim;
 
           // shape function
-          const double r = p_shape_function[offSetSF+ic];
+          const double r = ws_shape_function(ip, ic);
 
           // advection and diffison
 
@@ -501,38 +538,38 @@ AssembleMomentumElemSolverAlgorithm::execute()
 
             // advection operator  lhs; rhs handled above
             // lhs; il then ir
-            p_lhs[rLiC_i] += lhsfacAdv;
-            p_lhs[rRiC_i] -= lhsfacAdv;
+            lhs[rLiC_i] += lhsfacAdv;
+            lhs[rRiC_i] -= lhsfacAdv;
 
             // viscous stress
             const int offSetDnDx = nDim*nodesPerElement*ip + icNdim;
             double lhs_riC_i = 0.0;
             for ( int j = 0; j < nDim; ++j ) {
 
-              const double axj = p_scs_areav[ipNdim+j];
-              const double uj = p_velocityNp1[icNdim+j];
+              const double axj = ws_scs_areav(ip, j);
+              const double uj = ws_velocityNp1(ic, j);
 
               // -mu*dui/dxj*A_j; fixed i over j loop; see below..
-              const double lhsfacDiff_i = -muIp*p_dndx[offSetDnDx+j]*axj;
+              const double lhsfacDiff_i = -muIp*ws_dndx(ip, ic*nDim + j)*axj;
               // lhs; il then ir
               lhs_riC_i += lhsfacDiff_i;
 
               // -mu*duj/dxi*A_j
-              const double lhsfacDiff_j = -muIp*p_dndx[offSetDnDx+i]*axj;
+              const double lhsfacDiff_j = -muIp*ws_dndx(ip, ic*nDim + i)*axj;
               // lhs; il then ir
-              p_lhs[rowL+icNdim+j] += lhsfacDiff_j;
-              p_lhs[rowR+icNdim+j] -= lhsfacDiff_j;
+              lhs[rowL+icNdim+j] += lhsfacDiff_j;
+              lhs[rowR+icNdim+j] -= lhsfacDiff_j;
               // rhs; il then ir
-              p_rhs[indexL] -= lhsfacDiff_j*uj;
-              p_rhs[indexR] += lhsfacDiff_j*uj;
+              rhs[indexL] -= lhsfacDiff_j*uj;
+              rhs[indexR] += lhsfacDiff_j*uj;
             }
 
             // deal with accumulated lhs and flux for -mu*dui/dxj*Aj
-            p_lhs[rLiC_i] += lhs_riC_i;
-            p_lhs[rRiC_i] -= lhs_riC_i;
-            const double ui = p_velocityNp1[icNdim+i];
-            p_rhs[indexL] -= lhs_riC_i*ui;
-            p_rhs[indexR] += lhs_riC_i*ui;
+            lhs[rLiC_i] += lhs_riC_i;
+            lhs[rRiC_i] -= lhs_riC_i;
+            const double ui = ws_velocityNp1(ic, i);
+            rhs[indexL] -= lhs_riC_i*ui;
+            rhs[indexR] += lhs_riC_i*ui;
 
           }
         }
@@ -542,9 +579,9 @@ AssembleMomentumElemSolverAlgorithm::execute()
       for ( size_t i = 0; i < supplementalAlgSize; ++i )
         supplementalAlg_[i]->elem_execute( &lhs[0], &rhs[0], elem, meSCS, meSCV);
 
-      apply_coeff(connected_nodes, rhs, lhs, __FILE__);
+      apply_coeff(connected_nodes, rhs, lhs, localIdsScratch, __FILE__);
 
-    }
+    });
   });
 }
 
