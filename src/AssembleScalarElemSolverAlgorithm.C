@@ -168,7 +168,7 @@ AssembleScalarElemSolverAlgorithm::execute()
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
   auto team_exec = get_team_policy(elem_buckets.size(), bytes_per_team, bytes_per_thread);
 
-  Kokkos::parallel_for("Nalu::AssembleScalarElemDiffSolverAlgorithm::execute",
+  Kokkos::parallel_for("Nalu::AssembleScalarElemSolverAlgorithm::execute",
       team_exec, [&] (const DeviceTeam & team) {
       const int ib = team.league_rank();
       stk::mesh::Bucket & b = *elem_buckets[ib];
