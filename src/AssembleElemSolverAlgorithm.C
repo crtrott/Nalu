@@ -67,9 +67,7 @@ AssembleElemSolverAlgorithm::execute()
 
   if(supplementalAlg_.empty()) return;
 
-  const int numWorkBuckets = 32;
   const int maxNodesPerElement = 8;
-  const int maxElementsPerBucket = 512;
   const int lhsSize = maxNodesPerElement*maxNodesPerElement*sizeOfSystem_*sizeOfSystem_;
   const int rhsSize = maxNodesPerElement*sizeOfSystem_;
 
