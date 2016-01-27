@@ -170,6 +170,7 @@ ComputeMdotElemAlgorithm::execute()
       else
         meSCS->shape_fcn(&ws_shape_function(0, 0));
     });
+    team.team_barrier();
     
     Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
 

@@ -22,6 +22,8 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
+#include <KokkosInterface.h>
+
 namespace sierra{
 namespace nalu{
 
@@ -62,18 +64,6 @@ AssembleNodalGradUElemAlgorithm::execute()
   ScalarFieldType *dualNodalVolume = meta_data.get_field<ScalarFieldType>(stk::topology::NODE_RANK, "dual_nodal_volume");
   VectorFieldType *coordinates = meta_data.get_field<VectorFieldType>(stk::topology::NODE_RANK, realm_.get_coordinates_name());
 
-  // nodal fields to gather; gather everything other than what we are assembling
-  std::vector<double> ws_vectorQ;
-  std::vector<double> ws_dualVolume;
-  std::vector<double> ws_coordinates;
-
-  // geometry related to populate
-  std::vector<double> ws_scs_areav;
-  std::vector<double> ws_shape_function;
-
-  // ip data
-  std::vector<double>qIp(nDim);
-
   // define some common selectors
   stk::mesh::Selector s_locally_owned_union = meta_data.locally_owned_part()
     & stk::mesh::selectUnion(partVec_)  
@@ -81,10 +71,25 @@ AssembleNodalGradUElemAlgorithm::execute()
 
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
-  for ( stk::mesh::BucketVector::const_iterator ib = elem_buckets.begin();
-        ib != elem_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
-    const stk::mesh::Bucket::size_type length   = b.size();
+
+  const int maxNodesPerElement = 8;
+  const int maxNumScsIp = 16;
+
+  const int bytes_per_team = SharedMemView<double **>::shmem_size(maxNumScsIp, maxNodesPerElement);
+
+  const int bytes_per_thread =
+      SharedMemView<double **>::shmem_size(maxNodesPerElement, nDim) +
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) +
+      SharedMemView<double **>::shmem_size(maxNodesPerElement, nDim) +
+      SharedMemView<double **>::shmem_size(maxNumScsIp, nDim) +
+      SharedMemView<double *>::shmem_size(nDim);
+
+  auto team_exec = get_team_policy(elem_buckets.size(), bytes_per_team, bytes_per_thread);
+
+  Kokkos::parallel_for("AssembleNodalGradUElemAlgorithm::execute",
+      team_exec, [&](const DeviceTeam & team) {
+    stk::mesh::Bucket & b = *elem_buckets[team.league_rank()];
+    const stk::mesh::Bucket::size_type length = b.size();
 
     // extract master element
     MasterElement *meSCS = realm_.get_surface_master_element(b.topology());
@@ -95,26 +100,24 @@ AssembleNodalGradUElemAlgorithm::execute()
     const int *lrscv = meSCS->adjacentNodes();
 
     // algorithm related
-    ws_vectorQ.resize(nodesPerElement*nDim);
-    ws_dualVolume.resize(nodesPerElement);
-    ws_coordinates.resize(nodesPerElement*nDim);
-    ws_scs_areav.resize(numScsIp*nDim);
-    ws_shape_function.resize(numScsIp*nodesPerElement);
+    const int scratch_level = 2;
+    SharedMemView<double **> ws_vectorQ(team.thread_scratch(scratch_level), nodesPerElement, nDim);
+    SharedMemView<double *> ws_dualVolume(team.thread_scratch(scratch_level), nodesPerElement);
+    SharedMemView<double **> ws_coordinates(team.thread_scratch(scratch_level), nodesPerElement, nDim);
+    SharedMemView<double **> ws_scs_areav(team.thread_scratch(scratch_level), numScsIp, nDim);
+    SharedMemView<double *> qIp(team.thread_scratch(scratch_level), nDim);
 
-    // pointers.
-    double *p_vectorQ = &ws_vectorQ[0];
-    double *p_dualVolume = &ws_dualVolume[0];
-    double *p_coordinates = &ws_coordinates[0];
-    double *p_scs_areav = &ws_scs_areav[0];
-    double *p_shape_function = &ws_shape_function[0];
+    SharedMemView<double **> ws_shape_function(team.team_scratch(scratch_level), numScsIp, nodesPerElement);
 
-    if ( useShifted_ )
-      meSCS->shifted_shape_fcn(&p_shape_function[0]);
-    else
-      meSCS->shape_fcn(&p_shape_function[0]);
+    Kokkos::single(Kokkos::PerTeam(team), [&]() {
+      if ( useShifted_ )
+        meSCS->shifted_shape_fcn(&ws_shape_function(0, 0));
+      else
+        meSCS->shape_fcn(&ws_shape_function(0, 0));
+    });
+    team.team_barrier();
 
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
-
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&](const size_t k) {
       //===============================================
       // gather nodal data; this is how we do it now..
       //===============================================
@@ -137,19 +140,18 @@ AssembleNodalGradUElemAlgorithm::execute()
         double * vectorQ = stk::mesh::field_data(*vectorQ_, node);
 
         // gather scalars
-        p_dualVolume[ni] = *stk::mesh::field_data(*dualNodalVolume, node);
+        ws_dualVolume[ni] = *stk::mesh::field_data(*dualNodalVolume, node);
 
         // gather vectors
-        const int offSet = ni*nDim;
         for ( int j=0; j < nDim; ++j ) {
-          p_coordinates[offSet+j] = coords[j];
-          p_vectorQ[offSet+j] = vectorQ[j];
+          ws_coordinates(ni, j) = coords[j];
+          ws_vectorQ(ni, j) = vectorQ[j];
         }
       }
 
       // compute geometry
       double scs_error = 0.0;
-      meSCS->determinant(1, &p_coordinates[0], &p_scs_areav[0], &scs_error);
+      meSCS->determinant(1, &ws_coordinates(0, 0), &ws_scs_areav(0, 0), &scs_error);
 
       // start assembly
       for ( int ip = 0; ip < numScsIp; ++ip ) {
@@ -169,31 +171,30 @@ AssembleNodalGradUElemAlgorithm::execute()
         for (int j=0; j < nDim; ++j )
           qIp[j] = 0.0;
 
-        const int offSet = ip*nodesPerElement;
         for ( int ic = 0; ic < nodesPerElement; ++ic ) {
-          const double r = p_shape_function[offSet+ic];
+          const double r = ws_shape_function(ip, ic);
           for ( int j = 0; j < nDim; ++j ) {
-            qIp[j] += r*p_vectorQ[ic*nDim+j];
+            qIp[j] += r*ws_vectorQ(ic, j);
           }
         }
 
         // left and right volume
-        double inv_volL = 1.0/p_dualVolume[il];
-        double inv_volR = 1.0/p_dualVolume[ir];
+        double inv_volL = 1.0/ws_dualVolume[il];
+        double inv_volR = 1.0/ws_dualVolume[ir];
 
         // assemble to il/ir
         for ( int i = 0; i < nDim; ++i ) {
           const int row_gradQ = i*nDim;
           const double qip = qIp[i];
           for ( int j = 0; j < nDim; ++j ) {
-            double fac = qip*p_scs_areav[ip*nDim+j];
-            gradQL[row_gradQ+j] += fac*inv_volL;
-            gradQR[row_gradQ+j] -= fac*inv_volR;
+            double fac = qip*ws_scs_areav(ip, j);
+            Kokkos::atomic_add(&gradQL[row_gradQ+j], fac*inv_volL);
+            Kokkos::atomic_sub(&gradQR[row_gradQ+j], fac*inv_volR);
           }
         }
       }
-    }
-  }
+    });
+  });
 }
 
 } // namespace nalu

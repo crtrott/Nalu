@@ -19,6 +19,8 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
+#include <KokkosInterface.h>
+
 namespace sierra{
 namespace nalu{
 
@@ -67,12 +69,17 @@ AssembleNodalGradUAlgorithmDriver::pre_work()
 
   stk::mesh::BucketVector const& node_buckets =
     realm_.get_buckets( stk::topology::NODE_RANK, s_all_nodes );
-  for ( stk::mesh::BucketVector::const_iterator ib = node_buckets.begin() ;
-        ib != node_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
-    const stk::mesh::Bucket::size_type length   = b.size();
+
+  auto team_exec = get_team_policy(node_buckets.size(), 0, 0);
+  Kokkos::parallel_for("AssembleNodalGradUAlgorithmDriver::pre_work",
+      team_exec, [&](const DeviceTeam & team) {
+    const int ib = team.league_rank();
+    stk::mesh::Bucket & b = *node_buckets[ib];
+    const auto length = b.size();
+
     double * du = stk::mesh::field_data(*dudx, b);
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
+
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
       const int offSet = k*nDim*nDim;
       int counter = 0;
       for ( int i = 0; i < nDim; ++i ) {
@@ -80,8 +87,8 @@ AssembleNodalGradUAlgorithmDriver::pre_work()
           du[offSet+counter++] = 0.0;
         }
       }
-    }
-  }
+    });
+  });
 }
 
 //--------------------------------------------------------------------------
