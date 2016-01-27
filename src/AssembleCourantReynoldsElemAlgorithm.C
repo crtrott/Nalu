@@ -84,12 +84,6 @@ AssembleCourantReynoldsElemAlgorithm::execute()
   const double dt = realm_.timeIntegrator_->get_time_step();
   const double small = 1.0e-16;
 
-  // nodal fields to gather; gather everything other than what we are assembling
-  std::vector<double> ws_vrtm;
-  std::vector<double> ws_coordinates;
-  std::vector<double> ws_density;
-  std::vector<double> ws_viscosity;
-
   // deal with state
   ScalarFieldType &densityNp1 = density_->field_of_state(stk::mesh::StateNP1);
 
@@ -104,10 +98,18 @@ AssembleCourantReynoldsElemAlgorithm::execute()
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
 
-  Kokkos::parallel_for("AssembleCourantReynoldsElemAlgorithm::execute",
-    Kokkos::RangePolicy<Kokkos::Serial>(0, elem_buckets.size()), [&](const size_t ib) {
+  const int maxNodesPerElement = 8;
+  const int bytes_per_thread =
+      SharedMemView<double **>::shmem_size(maxNodesPerElement, nDim) +
+      SharedMemView<double **>::shmem_size(maxNodesPerElement, nDim) +
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) +
+      SharedMemView<double *>::shmem_size(maxNodesPerElement);
 
-    const stk::mesh::Bucket & b = *elem_buckets[ib];
+  auto team_exec = get_team_policy(elem_buckets.size(), 0, bytes_per_thread);
+
+  Kokkos::parallel_for("AssembleCourantReynoldsElemAlgorithm::execute",
+    team_exec, [&](const DeviceTeam & team) {
+    const stk::mesh::Bucket & b = *elem_buckets[team.league_rank()];
     const stk::mesh::Bucket::size_type length   = b.size();
 
     // extract master element
@@ -119,19 +121,13 @@ AssembleCourantReynoldsElemAlgorithm::execute()
     const int *lrscv = meSCS->adjacentNodes();
 
     // algorithm related
-    ws_vrtm.resize(nodesPerElement*nDim);
-    ws_coordinates.resize(nodesPerElement*nDim);
-    ws_density.resize(nodesPerElement);
-    ws_viscosity.resize(nodesPerElement);
+    const int scratch_level = 2;
+    SharedMemView<double **> vrtm(team.thread_scratch(scratch_level), nodesPerElement, nDim);
+    SharedMemView<double **> coordinates(team.thread_scratch(scratch_level), nodesPerElement, nDim);
+    SharedMemView<double *> density(team.thread_scratch(scratch_level), nodesPerElement);
+    SharedMemView<double *> viscosity(team.thread_scratch(scratch_level), nodesPerElement);
 
-    // pointers.
-    double *p_vrtm = &ws_vrtm[0];
-    double *p_coordinates = &ws_coordinates[0];
-    double *p_density = &ws_density[0];
-    double *p_viscosity = &ws_viscosity[0];
-
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
-
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&](const size_t k) {
       // get elem
       stk::mesh::Entity elem = b[k];
       
@@ -146,24 +142,23 @@ AssembleCourantReynoldsElemAlgorithm::execute()
       int num_nodes = bulk_data.num_nodes(elem);
 
       // sanity check on num nodes
-      ThrowAssert( num_nodes == nodesPerElement );
+      //ThrowAssert( num_nodes == nodesPerElement );
 
       for ( int ni = 0; ni < num_nodes; ++ni ) {
         stk::mesh::Entity node = node_rels[ni];
 
         // pointers to real data
         double * coords = stk::mesh::field_data(*coordinates_, node );
-        double * vrtm = stk::mesh::field_data(*velocityRTM_, node );
+        double * vrtm_field = stk::mesh::field_data(*velocityRTM_, node );
 
         // gather scalars
-        p_density[ni]   = *stk::mesh::field_data(densityNp1, node);
-        p_viscosity[ni] = *stk::mesh::field_data(*viscosity_, node);
+        density[ni]   = *stk::mesh::field_data(densityNp1, node);
+        viscosity[ni] = *stk::mesh::field_data(*viscosity_, node);
 
         // gather vectors
-        const int offSet = ni*nDim;
         for ( int j = 0; j < nDim; ++j ) {
-          p_coordinates[offSet+j] = coords[j];
-          p_vrtm[offSet+j] = vrtm[j];
+          coordinates(ni, j) = coords[j];
+          vrtm(ni, j) = vrtm_field[j];
         }
       }
 
@@ -179,8 +174,8 @@ AssembleCourantReynoldsElemAlgorithm::execute()
         double udotx = 0.0;
         double dxSq = 0.0;
         for ( int j = 0; j < nDim; ++j ) {
-          double ujIp = 0.5*(p_vrtm[il*nDim+j]+p_vrtm[il*nDim+j]);
-          double dxj = p_coordinates[ir*nDim+j] - p_coordinates[il*nDim+j];
+          double ujIp = 0.5*(vrtm(ir, j)+vrtm(il, j));
+          double dxj = coordinates(ir, j) - coordinates(il, j);
           udotx += dxj*ujIp;
           dxSq += dxj*dxj;
         }
@@ -189,7 +184,7 @@ AssembleCourantReynoldsElemAlgorithm::execute()
         const double ipCourant = std::abs(udotx*dt/dxSq);
         maxCR[0] = std::max(maxCR[0], ipCourant);
 
-        const double diffIp = 0.5*( p_viscosity[il]/p_density[il] + p_viscosity[ir]/p_density[ir] );
+        const double diffIp = 0.5*( viscosity[il]/density[il] + viscosity[ir]/density[ir] );
         const double ipReynolds = udotx/(diffIp+small);
         maxCR[1] = std::max(maxCR[1], ipReynolds);
         
@@ -201,7 +196,7 @@ AssembleCourantReynoldsElemAlgorithm::execute()
       // scatter
       elemReynolds[0] = eReynolds;
       elemCourant[0] = eCourant;
-    }
+    });
   });
 
   // parallel max
