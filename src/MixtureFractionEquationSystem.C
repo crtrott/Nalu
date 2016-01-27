@@ -77,6 +77,8 @@
 // stk_util
 #include <stk_util/parallel/ParallelReduce.hpp>
 
+#include <KokkosInterface.h>
+
 namespace sierra{
 namespace nalu{
 
@@ -996,9 +998,11 @@ MixtureFractionEquationSystem::compute_scalar_var_diss()
 
   stk::mesh::BucketVector const& node_buckets =
     realm_.get_buckets( stk::topology::NODE_RANK, s_all_nodes );
-  for ( stk::mesh::BucketVector::const_iterator ib = node_buckets.begin();
-        ib != node_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
+
+  auto team_exec = get_team_policy(node_buckets.size(), 0, 0);
+  Kokkos::parallel_for("MixtureFractionEquationSystem::compute_scalar_var_diss",
+      team_exec, [&](const DeviceTeam & team) {
+    stk::mesh::Bucket & b = *node_buckets[team.league_rank()];
     const stk::mesh::Bucket::size_type length   = b.size();
 
     double *scalarVar = stk::mesh::field_data(*scalarVar_, b);
@@ -1008,7 +1012,7 @@ MixtureFractionEquationSystem::compute_scalar_var_diss()
     const double *evisc = stk::mesh::field_data(*evisc_, b);
     const double *cVol = stk::mesh::field_data(*dualNodalVol, b);
 
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&](const size_t k) {
       const double filter = std::pow(cVol[k], 1.0/nDim);
       double sum = 0.0;
       for (int j = 0; j < nDim; ++j ) {
@@ -1016,8 +1020,8 @@ MixtureFractionEquationSystem::compute_scalar_var_diss()
       }
       scalarVar[k] = Cv*filter*filter*sum;
       scalarDiss[k] = 2.0*evisc[k]/rho[k]*sum;
-    }
-  }
+    });
+  });
 }
 
 //--------------------------------------------------------------------------
