@@ -145,55 +145,21 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
       const int rhsSize = nodesPerElement_;
       const int lhsSize = nodesPerElement_*nodesPerElement_;
 
-      SharedMemView<double**> shape_function_(team.team_shmem(), numScsIp, nodesPerElement_);
+      const int scratch_level = 0;
+      SharedMemView<double**> shape_function_(team.team_scratch(scratch_level), numScsIp, nodesPerElement_);
 
       // These are the per-thread handles. Better interface being worked on by Kokkos.
-      SharedMemView<stk::mesh::Entity*> connected_nodes_;
-      SharedMemView<double*> lhs_;
-      SharedMemView<double*> rhs_;
-      SharedMemView<double*> p_scalarQ;
-      SharedMemView<double*> p_diffFluxCoeff;
-      SharedMemView<double*> p_coordinates;
-      SharedMemView<double*> p_scs_areav;
-      SharedMemView<double*> p_dndx;
-      SharedMemView<double*> p_deriv;
-      SharedMemView<double*> p_det_j;
-      SharedMemView<int*> localIdsScratch;
-      {
-        connected_nodes_ = Kokkos::subview(
-            SharedMemView<stk::mesh::Entity**> (team.team_shmem(), team.team_size(), nodesPerElement_),
-            team.team_rank(), Kokkos::ALL());
-        lhs_ = Kokkos::subview(
-            SharedMemView<double**>(team.team_shmem(), team.team_size(), lhsSize),
-            team.team_rank(), Kokkos::ALL());
-        rhs_ = Kokkos::subview(
-            SharedMemView<double**>(team.team_shmem(), team.team_size(), rhsSize),
-            team.team_rank(), Kokkos::ALL());
-        p_scalarQ = Kokkos::subview(
-            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement_),
-            team.team_rank(), Kokkos::ALL());
-        p_diffFluxCoeff = Kokkos::subview(
-            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement_),
-            team.team_rank(), Kokkos::ALL());
-        p_coordinates = Kokkos::subview(
-            SharedMemView<double**> (team.team_shmem(), team.team_size(), nodesPerElement_*nDim_),
-            team.team_rank(), Kokkos::ALL());
-        p_scs_areav = Kokkos::subview(
-            SharedMemView<double**> (team.team_shmem(), team.team_size(), numScsIp*nDim_),
-            team.team_rank(), Kokkos::ALL());
-        p_dndx = Kokkos::subview(
-            SharedMemView<double**> (team.team_shmem(), team.team_size(), nDim_*numScsIp*nodesPerElement_),
-            team.team_rank(), Kokkos::ALL());
-        p_deriv = Kokkos::subview(
-            SharedMemView<double**> (team.team_shmem(), team.team_size(), nDim_*numScsIp*nodesPerElement_),
-            team.team_rank(), Kokkos::ALL());
-        p_det_j = Kokkos::subview(
-            SharedMemView<double**> (team.team_shmem(), team.team_size(), numScsIp),
-            team.team_rank(), Kokkos::ALL());
-        localIdsScratch = Kokkos::subview(
-            SharedMemView<int**> (team.team_shmem(), team.team_size(), rhsSize),
-            team.team_rank(), Kokkos::ALL());
-      }
+      SharedMemView<stk::mesh::Entity*> connected_nodes_(team.thread_scratch(scratch_level), nodesPerElement_);
+      SharedMemView<double*> lhs_(team.thread_scratch(scratch_level), lhsSize);
+      SharedMemView<double*> rhs_(team.thread_scratch(scratch_level), rhsSize);
+      SharedMemView<double*> p_scalarQ(team.thread_scratch(scratch_level), nodesPerElement_);
+      SharedMemView<double*> p_diffFluxCoeff(team.thread_scratch(scratch_level), nodesPerElement_);
+      SharedMemView<double*> p_coordinates(team.thread_scratch(scratch_level), nodesPerElement_*nDim_);
+      SharedMemView<double*> p_scs_areav(team.thread_scratch(scratch_level), numScsIp*nDim_);
+      SharedMemView<double*> p_dndx(team.thread_scratch(scratch_level), nDim_*numScsIp*nodesPerElement_);
+      SharedMemView<double*> p_deriv(team.thread_scratch(scratch_level), nDim_*numScsIp*nodesPerElement_);
+      SharedMemView<double*> p_det_j(team.thread_scratch(scratch_level), numScsIp);
+      SharedMemView<int*> localIdsScratch(team.thread_scratch(scratch_level), rhsSize);
 
       Kokkos::single(Kokkos::PerTeam(team), [&]() {
         meSCS->shape_fcn(&shape_function_(0, 0));
