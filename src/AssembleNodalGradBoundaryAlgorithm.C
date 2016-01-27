@@ -22,6 +22,8 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
+#include <KokkosInterface.h>
+
 namespace sierra{
 namespace nalu{
 
@@ -63,22 +65,24 @@ AssembleNodalGradBoundaryAlgorithm::execute()
   GenericFieldType *exposedAreaVec = meta_data.get_field<GenericFieldType>(meta_data.side_rank(), "exposed_area_vector");
   ScalarFieldType *dualNodalVolume = meta_data.get_field<ScalarFieldType>(stk::topology::NODE_RANK, "dual_nodal_volume");
 
-  // nodal fields to gather; gather everything other than what we are assembling
-  std::vector<double> ws_scalarQ;
-
-  // geometry related to populate
-  std::vector<double> ws_shape_function;
-
   // define some common selectors
   stk::mesh::Selector s_locally_owned_union = meta_data.locally_owned_part()
     &stk::mesh::selectUnion(partVec_);
 
   stk::mesh::BucketVector const& face_buckets =
     realm_.get_buckets( meta_data.side_rank(), s_locally_owned_union );
-  for ( stk::mesh::BucketVector::const_iterator ib = face_buckets.begin();
-        ib != face_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
-    const stk::mesh::Bucket::size_type length   = b.size();
+
+  const int maxNodesPerFace = 4;
+  const int maxNumScsIp = 8;
+  const int bytes_per_team = SharedMemView<double **>::shmem_size(maxNumScsIp, maxNodesPerFace);
+  const int bytes_per_thread = SharedMemView<double *>::shmem_size(maxNodesPerFace);
+
+  auto team_exec = get_team_policy(face_buckets.size(), bytes_per_team, bytes_per_thread);
+
+  Kokkos::parallel_for("AssembleNodalGradBoundaryAlgorithm",
+      team_exec, [&](const DeviceTeam & team) {
+    const stk::mesh::Bucket & b = *face_buckets[team.league_rank()];
+    const stk::mesh::Bucket::size_type length = b.size();
 
     // extract master element
     MasterElement *meFC = realm_.get_surface_master_element(b.topology());
@@ -89,20 +93,19 @@ AssembleNodalGradBoundaryAlgorithm::execute()
     const int *ipNodeMap = meFC->ipNodeMap();
 
     // algorithm related
-    ws_scalarQ.resize(nodesPerFace);
-    ws_shape_function.resize(numScsIp*nodesPerFace);
+    const int scratch_level = 2;
+    SharedMemView<double *> ws_scalarQ(team.thread_scratch(scratch_level), nodesPerFace);
+    SharedMemView<double **> ws_shape_function(team.team_scratch(scratch_level), numScsIp, nodesPerFace);
 
-    // pointers
-    double *p_scalarQ = ws_scalarQ.data();
-    double *p_shape_function = ws_shape_function.data();
+    Kokkos::single(Kokkos::PerTeam(team), [&]() {
+      if ( useShifted_ )
+        meFC->shifted_shape_fcn(&ws_shape_function(0, 0));
+      else
+        meFC->shape_fcn(&ws_shape_function(0, 0));
+    });
+    team.team_barrier();
 
-    if ( useShifted_ )
-      meFC->shifted_shape_fcn(&p_shape_function[0]);
-    else
-      meFC->shape_fcn(&p_shape_function[0]);
-
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
-
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&](const size_t k) {
       // face data
       const double * areaVec = stk::mesh::field_data(*exposedAreaVec, b, k);
 
@@ -139,7 +142,7 @@ AssembleNodalGradBoundaryAlgorithm::execute()
         double qIp = 0.0;
         const int offSet = ip*nodesPerFace;
         for ( int ic = 0; ic < nodesPerFace; ++ic ) {
-          qIp += p_shape_function[offSet+ic]*p_scalarQ[ic];
+          qIp += ws_shape_function(ip, ic)*ws_scalarQ[ic];
         }
 
         // nearest node volume
@@ -148,11 +151,11 @@ AssembleNodalGradBoundaryAlgorithm::execute()
         // assemble to nearest node
         for ( int j = 0; j < nDim; ++j ) {
           double fac = qIp*areaVec[ip*nDim+j];
-          gradQNN[j] += fac*inv_volNN;
+          Kokkos::atomic_add(&gradQNN[j], fac*inv_volNN);
         }
       }
-    }
-  }
+    });
+  });
 }
 
 } // namespace nalu
