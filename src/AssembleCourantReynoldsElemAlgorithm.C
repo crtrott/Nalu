@@ -26,6 +26,8 @@
 // stk_util
 #include <stk_util/parallel/ParallelReduce.hpp>
 
+#include <KokkosInterface.h>
+
 namespace sierra{
 namespace nalu{
 
@@ -101,9 +103,11 @@ AssembleCourantReynoldsElemAlgorithm::execute()
 
   stk::mesh::BucketVector const& elem_buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_locally_owned_union );
-  for ( stk::mesh::BucketVector::const_iterator ib = elem_buckets.begin();
-        ib != elem_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
+
+  Kokkos::parallel_for("AssembleCourantReynoldsElemAlgorithm::execute",
+    Kokkos::RangePolicy<Kokkos::Serial>(0, elem_buckets.size()), [&](const size_t ib) {
+
+    const stk::mesh::Bucket & b = *elem_buckets[ib];
     const stk::mesh::Bucket::size_type length   = b.size();
 
     // extract master element
@@ -198,7 +202,7 @@ AssembleCourantReynoldsElemAlgorithm::execute()
       elemReynolds[0] = eReynolds;
       elemCourant[0] = eCourant;
     }
-  }
+  });
 
   // parallel max
   double g_maxCR[2]  = {};
