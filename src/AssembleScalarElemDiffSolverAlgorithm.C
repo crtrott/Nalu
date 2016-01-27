@@ -145,7 +145,7 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
       const int rhsSize = nodesPerElement_;
       const int lhsSize = nodesPerElement_*nodesPerElement_;
 
-      const int scratch_level = 0;
+      const int scratch_level = 2;
       SharedMemView<double**> shape_function_(team.team_scratch(scratch_level), numScsIp, nodesPerElement_);
 
       // These are the per-thread handles. Better interface being worked on by Kokkos.
