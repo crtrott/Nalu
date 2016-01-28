@@ -22,6 +22,8 @@
 #include <stk_mesh/base/MetaData.hpp>
 #include <stk_mesh/base/Part.hpp>
 
+#include <KokkosInterface.h>
+
 namespace sierra{
 namespace nalu{
 
@@ -65,7 +67,6 @@ ComputeMdotElemOpenAlgorithm::ComputeMdotElemOpenAlgorithm(
 void
 ComputeMdotElemOpenAlgorithm::execute()
 {
-
   stk::mesh::BulkData & bulk_data = realm_.bulk_data();
   stk::mesh::MetaData & meta_data = realm_.meta_data();
 
@@ -75,32 +76,6 @@ ComputeMdotElemOpenAlgorithm::execute()
   const std::string dofName = "pressure";
   const double includeNOC 
     = (realm_.get_noc_usage(dofName) == true) ? 1.0 : 0.0;
-
-  // ip values; both boundary and opposing surface
-  std::vector<double> uBip(nDim);
-  std::vector<double> rho_uBip(nDim);
-  std::vector<double> GpdxBip(nDim);
-  std::vector<double> coordBip(nDim);
-  std::vector<double> coordScs(nDim);
-
-  // pointers to fixed values
-  double *p_uBip = &uBip[0];
-  double *p_rho_uBip = &rho_uBip[0];
-  double *p_GpdxBip = &GpdxBip[0];
-  double *p_coordBip = &coordBip[0];
-  double *p_coordScs = &coordScs[0];
-
-  // nodal fields to gather
-  std::vector<double> ws_coordinates;
-  std::vector<double> ws_pressure;
-  std::vector<double> ws_velocityNp1;
-  std::vector<double> ws_face_coordinates;
-  std::vector<double> ws_Gpdx;
-  std::vector<double> ws_density;
-  std::vector<double> ws_bcPressure;
-  // master element
-  std::vector<double> ws_shape_function;
-  std::vector<double> ws_face_shape_function;
 
   // time step
   const double dt = realm_.get_time_step();
@@ -124,14 +99,39 @@ ComputeMdotElemOpenAlgorithm::execute()
 
   stk::mesh::BucketVector const& face_buckets =
     realm_.get_buckets( meta_data.side_rank(), s_locally_owned_union );
-  for ( stk::mesh::BucketVector::const_iterator ib = face_buckets.begin();
-        ib != face_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
+
+  const int maxNodesPerElement = 8;
+  const int maxNumScsIp = 16;
+  const int maxNodesPerFace = 4;
+  const int maxNumScsBip = 8;
+
+  const int bytes_per_thread = SharedMemView<int *>::shmem_size(maxNodesPerFace) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<double **>::shmem_size(maxNodesPerElement, nDim) +
+      SharedMemView<double *>::shmem_size(maxNodesPerElement) +
+      SharedMemView<double **>::shmem_size(maxNodesPerFace, nDim) +
+      SharedMemView<double **>::shmem_size(maxNodesPerFace, nDim) +
+      SharedMemView<double *>::shmem_size(maxNodesPerFace) +
+      SharedMemView<double *>::shmem_size(maxNodesPerFace);
+
+  const int bytes_per_team =
+      SharedMemView<double **>::shmem_size(maxNumScsIp, maxNodesPerElement) +
+      SharedMemView<double **>::shmem_size(maxNumScsBip, maxNodesPerFace);
+
+  auto team_exec = get_team_policy(face_buckets.size(), bytes_per_team, bytes_per_thread);
+
+  Kokkos::parallel_for("ComputeMdotElemOpenAlgorithm::execute",
+      team_exec, [&](const DeviceTeam & team) {
+    stk::mesh::Bucket & b = *face_buckets[team.league_rank()];
+    const auto length = b.size();
 
     // extract connected element topology
-    b.parent_topology(stk::topology::ELEMENT_RANK, parentTopo);
-    ThrowAssert ( parentTopo.size() == 1 );
-    stk::topology theElemTopo = parentTopo[0];
+    const auto first_elem = bulk_data.begin_elements(b[0])[0];
+    stk::topology theElemTopo = bulk_data.bucket(first_elem).topology();
 
     // volume master element
     MasterElement *meSCS = realm_.get_surface_master_element(theElemTopo);
@@ -142,44 +142,41 @@ ComputeMdotElemOpenAlgorithm::execute()
     MasterElement *meFC = realm_.get_surface_master_element(b.topology());
     const int nodesPerFace = b.topology().num_nodes();
     const int numScsBip = meFC->numIntPoints_;
-    std::vector<int> face_node_ordinal_vec(nodesPerFace);
 
     // algorithm related; element
-    ws_coordinates.resize(nodesPerElement*nDim);
-    ws_pressure.resize(nodesPerElement);
-    ws_velocityNp1.resize(nodesPerFace*nDim);
-    ws_Gpdx.resize(nodesPerFace*nDim);
-    ws_density.resize(nodesPerFace);
-    ws_bcPressure.resize(nodesPerFace);
-    ws_shape_function.resize(numScsIp*nodesPerElement);
-    ws_face_shape_function.resize(numScsBip*nodesPerFace);
+    const int scratch_level = 2;
+    SharedMemView<int *> face_node_ordinal_vec(team.thread_scratch(scratch_level), nodesPerFace);
+    SharedMemView<double *> uBip(team.thread_scratch(scratch_level), nDim);
+    SharedMemView<double *> rho_uBip(team.thread_scratch(scratch_level), nDim);
+    SharedMemView<double *> GpdxBip(team.thread_scratch(scratch_level), nDim);
+    SharedMemView<double *> coordBip(team.thread_scratch(scratch_level), nDim);
+    SharedMemView<double *> coordScs(team.thread_scratch(scratch_level), nDim);
+    SharedMemView<double **> ws_coordinates(team.thread_scratch(scratch_level), nodesPerElement, nDim);
+    SharedMemView<double *> ws_pressure(team.thread_scratch(scratch_level), nodesPerElement);
+    SharedMemView<double **> ws_velocityNp1(team.thread_scratch(scratch_level), nodesPerFace, nDim);
+    SharedMemView<double **> ws_Gpdx(team.thread_scratch(scratch_level), nodesPerFace, nDim);
+    SharedMemView<double *> ws_density(team.thread_scratch(scratch_level), nodesPerFace);
+    SharedMemView<double *> ws_bcPressure(team.thread_scratch(scratch_level), nodesPerFace);
 
-    // pointers
-    double *p_coordinates = &ws_coordinates[0];
-    double *p_pressure = &ws_pressure[0];
-    double *p_velocityNp1 = &ws_velocityNp1[0];
-    double *p_Gpdx = &ws_Gpdx[0];
-    double *p_density = &ws_density[0];
-    double *p_bcPressure = &ws_bcPressure[0];
-    double *p_shape_function = &ws_shape_function[0];
-    double *p_face_shape_function = &ws_face_shape_function[0];
+    SharedMemView<double **> ws_shape_function(team.team_scratch(scratch_level), numScsIp, nodesPerElement);
+    SharedMemView<double **> ws_face_shape_function(team.team_scratch(scratch_level), numScsBip, nodesPerFace);
 
-    // shape functions; interior
-    if ( shiftPoisson_ )
-      meSCS->shifted_shape_fcn(&p_shape_function[0]);
-    else
-      meSCS->shape_fcn(&p_shape_function[0]);
+    Kokkos::single(Kokkos::PerTeam(team), [&]() {
+      // shape functions; interior
+      if ( shiftPoisson_ )
+        meSCS->shifted_shape_fcn(&ws_shape_function(0, 0));
+      else
+        meSCS->shape_fcn(&ws_shape_function(0, 0));
 
-    // shape functions; boundary
-    if ( shiftMdot_ )
-      meFC->shifted_shape_fcn(&p_face_shape_function[0]);
-    else
-      meFC->shape_fcn(&p_face_shape_function[0]);
+      // shape functions; boundary
+      if ( shiftMdot_ )
+        meFC->shifted_shape_fcn(&ws_face_shape_function(0, 0));
+      else
+        meFC->shape_fcn(&ws_face_shape_function(0, 0));
+    });
+    team.team_barrier();
     
-    const stk::mesh::Bucket::size_type length   = b.size();
-
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
-
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&](const size_t k) {
       // get face
       stk::mesh::Entity face = b[k];
 
@@ -194,16 +191,16 @@ ComputeMdotElemOpenAlgorithm::execute()
         stk::mesh::Entity node = face_node_rels[ni];
 
         // gather scalars
-        p_density[ni]    = *stk::mesh::field_data(densityNp1, node);
-        p_bcPressure[ni] = *stk::mesh::field_data(*pressureBc_, node);
+        ws_density[ni]    = *stk::mesh::field_data(densityNp1, node);
+        ws_bcPressure[ni] = *stk::mesh::field_data(*pressureBc_, node);
 
         // gather vectors
         double * uNp1 = stk::mesh::field_data(velocityNp1, node);
         double * Gjp = stk::mesh::field_data(*Gpdx_, node);
         const int offSet = ni*nDim;
         for ( int j=0; j < nDim; ++j ) {
-          p_velocityNp1[offSet+j] = uNp1[j];
-          p_Gpdx[offSet+j] = Gjp[j];
+          ws_velocityNp1(ni, j) = uNp1[j];
+          ws_Gpdx(ni, j) = Gjp[j];
         }
       }
 
@@ -213,12 +210,12 @@ ComputeMdotElemOpenAlgorithm::execute()
 
       // extract the connected element to this exposed face; should be single in size!
       const stk::mesh::Entity* face_elem_rels = bulk_data.begin_elements(face);
-      ThrowAssert( bulk_data.num_elements(face) == 1 );
+      //ThrowAssert( bulk_data.num_elements(face) == 1 );
 
       // get element; its face ordinal number and populate face_node_ordinal_vec
       stk::mesh::Entity element = face_elem_rels[0];
       const int face_ordinal = bulk_data.begin_element_ordinals(face)[0];
-      theElemTopo.side_node_ordinals(face_ordinal, face_node_ordinal_vec.begin());
+      theElemTopo.side_node_ordinals(face_ordinal, &face_node_ordinal_vec(0));
 
       //======================================
       // gather nodal data off of element
@@ -231,13 +228,12 @@ ComputeMdotElemOpenAlgorithm::execute()
         stk::mesh::Entity node = elem_node_rels[ni];
 
         // gather scalars
-        p_pressure[ni] = *stk::mesh::field_data(*pressure_, node);
+        ws_pressure[ni] = *stk::mesh::field_data(*pressure_, node);
 
         // gather vectors
         double * coords = stk::mesh::field_data(*coordinates_, node);
-        const int offSet = ni*nDim;
         for ( int j=0; j < nDim; ++j ) {
-          p_coordinates[offSet+j] = coords[j];
+          ws_coordinates(ni, j) = coords[j];
         }
       }
 
@@ -248,11 +244,11 @@ ComputeMdotElemOpenAlgorithm::execute()
 
         // zero out vector quantities
         for ( int j = 0; j < nDim; ++j ) {
-          p_uBip[j] = 0.0;
-          p_rho_uBip[j] = 0.0;
-          p_GpdxBip[j] = 0.0;
-          p_coordBip[j] = 0.0;
-          p_coordScs[j] = 0.0;
+          uBip[j] = 0.0;
+          rho_uBip[j] = 0.0;
+          GpdxBip[j] = 0.0;
+          coordBip[j] = 0.0;
+          coordScs[j] = 0.0;
         }
         double rhoBip = 0.0;
 
@@ -261,29 +257,25 @@ ComputeMdotElemOpenAlgorithm::execute()
         const int offSetSF_face = ip*nodesPerFace;
         for ( int ic = 0; ic < nodesPerFace; ++ic ) {
           const int fn = face_node_ordinal_vec[ic];
-          const double r = p_face_shape_function[offSetSF_face+ic];
-          const double rhoIC = p_density[ic];
+          const double r = ws_face_shape_function(ip, ic);
+          const double rhoIC = ws_density[ic];
           rhoBip += r*rhoIC;
-          pBip += r*p_bcPressure[ic];
-          const int offSetFN = ic*nDim;
-          const int offSetEN = fn*nDim;
+          pBip += r*ws_bcPressure[ic];
           for ( int j = 0; j < nDim; ++j ) {
-            p_uBip[j] += r*p_velocityNp1[offSetFN+j];
-            p_rho_uBip[j] += r*rhoIC*p_velocityNp1[offSetFN+j];
-            p_GpdxBip[j] += r*p_Gpdx[offSetFN+j];
-            p_coordBip[j] += r*p_coordinates[offSetEN+j];
+            uBip[j] += r*ws_velocityNp1(ic, j);
+            rho_uBip[j] += r*rhoIC*ws_velocityNp1(ic, j);
+            GpdxBip[j] += r*ws_Gpdx(ic, j);
+            coordBip[j] += r*ws_coordinates(fn, j);
           }
         }
 
         // data at interior opposing face
         double pScs = 0.0;
-        const int offSetSF_elem = opposingScsIp*nodesPerElement;
         for ( int ic = 0; ic < nodesPerElement; ++ic ) {
-          const double r = p_shape_function[offSetSF_elem+ic];
-          pScs += r*p_pressure[ic];
-          const int offSet = ic*nDim;
+          const double r = ws_shape_function(opposingScsIp, ic);
+          pScs += r*ws_pressure[ic];
           for ( int j = 0; j < nDim; ++j ) {
-            p_coordScs[j] += r*p_coordinates[offSet+j];
+            coordScs[j] += r*ws_coordinates(ic, j);
           }
         }
 
@@ -292,12 +284,12 @@ ComputeMdotElemOpenAlgorithm::execute()
         double asq = 0.0;
         double tmdot = 0.0;
         for ( int j = 0; j < nDim; ++j ) {
-          const double dxj = p_coordBip[j] - p_coordScs[j];
+          const double dxj = coordBip[j] - coordScs[j];
           const double axj = areaVec[ip*nDim+j];
           axdx += axj*dxj;
           asq += axj*axj;
-          tmdot += (interpTogether*p_rho_uBip[j] + om_interpTogether*rhoBip*p_uBip[j] 
-                    + projTimeScale*p_GpdxBip[j])*axj;
+          tmdot += (interpTogether*rho_uBip[j] + om_interpTogether*rhoBip*uBip[j]
+                    + projTimeScale*GpdxBip[j])*axj;
         }
 	
         const double inv_axdx = 1.0/axdx;
@@ -305,18 +297,18 @@ ComputeMdotElemOpenAlgorithm::execute()
         // deal with noc
         double noc = 0.0;
         for ( int j = 0; j < nDim; ++j ) {
-          const double dxj = p_coordBip[j] - p_coordScs[j];
+          const double dxj = coordBip[j] - coordScs[j];
           const double axj = areaVec[ip*nDim+j];
           const double kxj = axj - asq*inv_axdx*dxj; // NOC
-          noc += kxj*p_GpdxBip[j];
+          noc += kxj*GpdxBip[j];
         }
 
         // assign
         mdot[ip] = tmdot - projTimeScale*((pBip-pScs)*asq*inv_axdx + noc*includeNOC);
 
       }
-    }
-  }
+    });
+  });
 }
 
 
