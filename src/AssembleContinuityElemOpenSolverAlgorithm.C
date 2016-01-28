@@ -177,76 +177,26 @@ AssembleContinuityElemOpenSolverAlgorithm::execute()
     const int lhsSize = nodesPerElement*nodesPerElement;
     const int rhsSize = nodesPerElement;
 
-    SharedMemView<double*> ws_shape_function(team.team_shmem(), numScsIp*nodesPerElement);
-    SharedMemView<double*> ws_shape_function_lhs(team.team_shmem(), numScsIp*nodesPerElement);
-    SharedMemView<double*> ws_face_shape_function(team.team_shmem(), numScsBip*nodesPerFace);
+    SharedMemView<double*> ws_shape_function(team.team_scratch(2), numScsIp*nodesPerElement);
+    SharedMemView<double*> ws_shape_function_lhs(team.team_scratch(2), numScsIp*nodesPerElement);
+    SharedMemView<double*> ws_face_shape_function(team.team_scratch(2), numScsBip*nodesPerFace);
 
-    SharedMemView<stk::mesh::Entity*> connected_nodes;
-    SharedMemView<int*> face_node_ordinal_vec;
-    SharedMemView<double*> lhs;
-    SharedMemView<double*> rhs;
-    SharedMemView<int*> localIdsScratch;
-    SharedMemView<double*> ws_vrtm;
-    SharedMemView<double*> ws_Gpdx;
-    SharedMemView<double*> ws_coordinates;
-    SharedMemView<double*> ws_pressure;
-    SharedMemView<double*> ws_density;
-    SharedMemView<double*> ws_bcPressure;
-    SharedMemView<double*> uBip;
-    SharedMemView<double*> rho_uBip;
-    SharedMemView<double*> GpdxBip;
-    SharedMemView<double*> coordBip;
-    SharedMemView<double*> coordScs;
-    {
-      lhs = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), lhsSize),
-          team.team_rank(), Kokkos::ALL());
-      rhs = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), rhsSize),
-          team.team_rank(), Kokkos::ALL());
-      connected_nodes = Kokkos::subview(
-          SharedMemView<stk::mesh::Entity**> (team.team_shmem(), team.team_size(), nodesPerElement),
-          team.team_rank(), Kokkos::ALL());
-      ws_vrtm = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), nodesPerFace*nDim),
-          team.team_rank(), Kokkos::ALL());
-      ws_Gpdx = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), nodesPerFace*nDim),
-          team.team_rank(), Kokkos::ALL());
-      ws_coordinates = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), nodesPerElement*nDim),
-          team.team_rank(), Kokkos::ALL());
-      ws_bcPressure = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), nodesPerFace),
-          team.team_rank(), Kokkos::ALL());
-      ws_pressure = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), nodesPerElement),
-          team.team_rank(), Kokkos::ALL());
-      ws_density = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), nodesPerFace),
-          team.team_rank(), Kokkos::ALL());
-      uBip = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), nDim),
-          team.team_rank(), Kokkos::ALL());
-      rho_uBip = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), nDim),
-          team.team_rank(), Kokkos::ALL());
-      GpdxBip = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), nDim),
-          team.team_rank(), Kokkos::ALL());
-      coordBip = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), nDim),
-          team.team_rank(), Kokkos::ALL());
-      coordScs = Kokkos::subview(
-          SharedMemView<double**>(team.team_shmem(), team.team_size(), nDim),
-          team.team_rank(), Kokkos::ALL());
-      localIdsScratch = Kokkos::subview(
-          SharedMemView<int**> (team.team_shmem(), team.team_size(), rhsSize),
-          team.team_rank(), Kokkos::ALL());
-      face_node_ordinal_vec = Kokkos::subview(
-          SharedMemView<int**> (team.team_shmem(), team.team_size(), nodesPerFace),
-          team.team_rank(), Kokkos::ALL());
-    }
+    SharedMemView<stk::mesh::Entity*> connected_nodes(team.thread_scratch(2), nodesPerElement);
+    SharedMemView<int*> face_node_ordinal_vec(team.thread_scratch(2), nodesPerFace);
+    SharedMemView<double*> lhs(team.thread_scratch(2), lhsSize);
+    SharedMemView<double*> rhs(team.thread_scratch(2), rhsSize);
+    SharedMemView<int*> localIdsScratch(team.thread_scratch(2), rhsSize);
+    SharedMemView<double*> ws_vrtm(team.thread_scratch(2), nodesPerFace*nDim);
+    SharedMemView<double*> ws_Gpdx(team.thread_scratch(2), nodesPerFace*nDim);
+    SharedMemView<double*> ws_coordinates(team.thread_scratch(2), nodesPerElement*nDim);
+    SharedMemView<double*> ws_pressure(team.thread_scratch(2), nodesPerElement);
+    SharedMemView<double*> ws_density(team.thread_scratch(2), nodesPerFace);
+    SharedMemView<double*> ws_bcPressure(team.thread_scratch(2), nodesPerFace);
+    SharedMemView<double*> uBip(team.thread_scratch(2), nDim);
+    SharedMemView<double*> rho_uBip(team.thread_scratch(2), nDim);
+    SharedMemView<double*> GpdxBip(team.thread_scratch(2), nDim);
+    SharedMemView<double*> coordBip(team.thread_scratch(2), nDim);
+    SharedMemView<double*> coordScs(team.thread_scratch(2), nDim);
 
     // shape functions; interior
     Kokkos::single(Kokkos::PerTeam(team), [&]() {
