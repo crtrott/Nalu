@@ -108,31 +108,9 @@ AssembleScalarElemOpenSolverAlgorithm::execute()
   // one minus flavor..
   const double om_alphaUpw = 1.0-alphaUpw;
 
-  // space for LHS/RHS; nodesPerElement*nodesPerElement and nodesPerElement
-  std::vector<double> lhs;
-  std::vector<double> rhs;
-  std::vector<stk::mesh::Entity> connected_nodes;
-
-  // ip values; only boundary
-  std::vector<double> coordBip(nDim);
-
-  // pointers to fixed values
-  double *p_coordBip = &coordBip[0];
-
-  // nodal fields to gather
-  std::vector<double> ws_face_coordinates;
-  std::vector<double> ws_scalarQNp1;
-  std::vector<double> ws_bcScalarQ;
-
-  // master element
-  std::vector<double> ws_face_shape_function;
-
   // deal with state
   ScalarFieldType &scalarQNp1 = scalarQ_->field_of_state(stk::mesh::StateNP1);
   ScalarFieldType &densityNp1 = density_->field_of_state(stk::mesh::StateNP1);
-
-  // define vector of parent topos; should always be UNITY in size
-  std::vector<stk::topology> parentTopo;
 
   // define some common selectors
   stk::mesh::Selector s_locally_owned_union = meta_data.locally_owned_part()
@@ -141,14 +119,38 @@ AssembleScalarElemOpenSolverAlgorithm::execute()
   stk::mesh::BucketVector const& face_buckets =
     realm_.get_buckets( meta_data.side_rank(), s_locally_owned_union );
 
+  const int maxNodesPerElement = 8;
+  const int maxNodesPerFace = 4;
+  const int maxNumScsBip = 8;
+
+  const int maxlhsSize = maxNodesPerElement*nDim*maxNodesPerElement*nDim;
+  const int maxrhsSize = maxNodesPerElement*nDim;
+
+  const int bytes_per_thread =
+      SharedMemView<double *>::shmem_size(maxlhsSize) +
+      SharedMemView<double *>::shmem_size(maxrhsSize) +
+      SharedMemView<stk::mesh::Entity *>::shmem_size(maxNodesPerElement) +
+      SharedMemView<int *>::shmem_size(maxrhsSize) +
+      SharedMemView<double **>::shmem_size(maxNodesPerFace, nDim) +
+      SharedMemView<double *>::shmem_size(maxNodesPerFace) +
+      SharedMemView<double *>::shmem_size(maxNodesPerFace) +
+      SharedMemView<double *>::shmem_size(nDim) +
+      SharedMemView<int *>::shmem_size(maxNodesPerFace);
+
+  // shape functions
+  const int bytes_per_team =
+      SharedMemView<double **>::shmem_size(maxNumScsBip, maxNodesPerFace);
+
+  auto team_exec = get_team_policy(face_buckets.size(), bytes_per_team, bytes_per_thread);
+
   Kokkos::parallel_for("Nalu::AssembleScalarElemOpenSolver",
-    Kokkos::RangePolicy<Kokkos::Serial>(0, face_buckets.size()), [&] (const int& ib) {
-    const stk::mesh::Bucket & b = *face_buckets[ib];
+      team_exec, [&](const DeviceTeam & team) {
+    const stk::mesh::Bucket & b = *face_buckets[team.league_rank()];
+    const auto length = b.size();
 
     // extract connected element topology
-    b.parent_topology(stk::topology::ELEMENT_RANK, parentTopo);
-    ThrowAssert ( parentTopo.size() == 1 );
-    stk::topology theElemTopo = parentTopo[0];
+    const auto first_elem = bulk_data.begin_elements(b[0])[0];
+    stk::topology theElemTopo = bulk_data.bucket(first_elem).topology();
 
     // volume master element
     MasterElement *meSCS = realm_.get_surface_master_element(theElemTopo);
@@ -158,41 +160,36 @@ AssembleScalarElemOpenSolverAlgorithm::execute()
     MasterElement *meFC = realm_.get_surface_master_element(b.topology());
     const int nodesPerFace = meFC->nodesPerElement_;
     const int numScsBip = meFC->numIntPoints_;
-    std::vector<int> face_node_ordinal_vec(nodesPerFace);
 
     // resize some things; matrix related
     const int lhsSize = nodesPerElement*nodesPerElement;
     const int rhsSize = nodesPerElement;
-    lhs.resize(lhsSize);
-    rhs.resize(rhsSize);
-    connected_nodes.resize(nodesPerElement);
+    const int scratch_level = 2;
+    SharedMemView<double *> lhs(team.thread_scratch(scratch_level), lhsSize);
+    SharedMemView<double *> rhs(team.thread_scratch(scratch_level), rhsSize);
+    SharedMemView<stk::mesh::Entity *> connected_nodes(team.thread_scratch(scratch_level), nodesPerElement);
+    SharedMemView<int *> localIdsScratch(team.thread_scratch(scratch_level), rhsSize);
 
     // algorithm related; element
-    ws_face_coordinates.resize(nodesPerFace*nDim);
-    ws_scalarQNp1.resize(nodesPerFace);
-    ws_bcScalarQ.resize(nodesPerFace);
-    ws_face_shape_function.resize(numScsBip*nodesPerFace);
-
-    // pointers
-    double *p_lhs = &lhs[0];
-    double *p_rhs = &rhs[0];
-    double *p_face_coordinates = &ws_face_coordinates[0];
-    double *p_scalarQNp1 = &ws_scalarQNp1[0];
-    double *p_bcScalarQ = &ws_bcScalarQ[0];
-    double *p_face_shape_function = &ws_face_shape_function[0];
+    SharedMemView<double **> ws_face_coordinates(team.thread_scratch(scratch_level), nodesPerFace, nDim);
+    SharedMemView<double *> ws_scalarQNp1(team.thread_scratch(scratch_level), nodesPerFace);
+    SharedMemView<double *> ws_bcScalarQ(team.thread_scratch(scratch_level), nodesPerFace);
+    SharedMemView<double *> coordBip(team.thread_scratch(scratch_level), nDim);
+    SharedMemView<int *> face_node_ordinal_vec(team.thread_scratch(scratch_level), nodesPerFace);
 
     // shape functions
-    meFC->shape_fcn(&p_face_shape_function[0]);
+    SharedMemView<double **> ws_face_shape_function(team.team_scratch(scratch_level), numScsBip, nodesPerFace);
+    Kokkos::single(Kokkos::PerTeam(team), [&]() {
+      meFC->shape_fcn(&ws_face_shape_function(0, 0));
+    });
+    team.team_barrier();
 
-    const stk::mesh::Bucket::size_type length   = b.size();
-
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
-
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&](const size_t k) {
       // zero lhs/rhs
       for ( int p = 0; p < lhsSize; ++p )
-        p_lhs[p] = 0.0;
+        lhs[p] = 0.0;
       for ( int p = 0; p < rhsSize; ++p )
-        p_rhs[p] = 0.0;
+        rhs[p] = 0.0;
 
       // get face
       stk::mesh::Entity face = b[k];
@@ -211,25 +208,24 @@ AssembleScalarElemOpenSolverAlgorithm::execute()
         stk::mesh::Entity node = face_node_rels[ni];
 
         // gather scalars
-        p_scalarQNp1[ni] = *stk::mesh::field_data(scalarQNp1, node);
-        p_bcScalarQ[ni] = *stk::mesh::field_data(*bcScalarQ_, node);
+        ws_scalarQNp1[ni] = *stk::mesh::field_data(scalarQNp1, node);
+        ws_bcScalarQ[ni] = *stk::mesh::field_data(*bcScalarQ_, node);
 
         // gather vectors
         double * coords = stk::mesh::field_data(*coordinates_, node);
-        const int offSet = ni*nDim;
         for ( int i=0; i < nDim; ++i ) {
-          p_face_coordinates[offSet+i] = coords[i];
+          ws_face_coordinates(ni, i) = coords[i];
         }
       }
 
       // extract the connected element to this exposed face; should be single in size!
       const stk::mesh::Entity* face_elem_rels = bulk_data.begin_elements(face);
-      ThrowAssert( bulk_data.num_elements(face) == 1 );
+      //ThrowAssert( bulk_data.num_elements(face) == 1 );
 
       // get element; its face ordinal number and populate face_node_ordinal_vec
       stk::mesh::Entity element = face_elem_rels[0];
       const int face_ordinal = bulk_data.begin_element_ordinals(face)[0];
-      theElemTopo.side_node_ordinals(face_ordinal, face_node_ordinal_vec.begin());
+      theElemTopo.side_node_ordinals(face_ordinal, &face_node_ordinal_vec(0));
 
       // mapping from ip to nodes for this ordinal
       const int *ipNodeMap = meSCS->ipNodeMap(face_ordinal);
@@ -240,7 +236,7 @@ AssembleScalarElemOpenSolverAlgorithm::execute()
       stk::mesh::Entity const * elem_node_rels = bulk_data.begin_nodes(element);
       int num_nodes = bulk_data.num_nodes(element);
       // sanity check on num nodes
-      ThrowAssert( num_nodes == nodesPerElement );
+      //ThrowAssert( num_nodes == nodesPerElement );
       for ( int ni = 0; ni < num_nodes; ++ni ) {
         // set connected nodes
         connected_nodes[ni] = elem_node_rels[ni];
@@ -260,18 +256,18 @@ AssembleScalarElemOpenSolverAlgorithm::execute()
 
         // zero out vector quantities
         for ( int j = 0; j < nDim; ++j )
-          p_coordBip[j] = 0.0;
+          coordBip[j] = 0.0;
 
         // interpolate to bip
         double qIp = 0.0;
         double qIpEntrain = 0.0;
         for ( int ic = 0; ic < nodesPerFace; ++ic ) {
-          const double r = p_face_shape_function[offSetSF_face+ic];
-          qIp += r*p_scalarQNp1[ic];
-          qIpEntrain += r*p_bcScalarQ[ic];
+          const double r = ws_face_shape_function(ip, ic);
+          qIp += r*ws_scalarQNp1[ic];
+          qIpEntrain += r*ws_bcScalarQ[ic];
           const int offSetFN = ic*nDim;
           for ( int j = 0; j < nDim; ++j ) {
-            p_coordBip[j] += r*p_face_coordinates[offSetFN+j];
+            coordBip[j] += r*ws_face_coordinates(ic, j);
           }
         }
 
@@ -320,29 +316,29 @@ AssembleScalarElemOpenSolverAlgorithm::execute()
           // total advection
           const double aflux = tmdot*(pecfac*qUpwind+om_pecfac*qIp);
 
-          p_rhs[nearestNode] -= aflux;
+          rhs[nearestNode] -= aflux;
 
           // upwind lhs
-          p_lhs[rowR+nearestNode] += tmdot*pecfac*alphaUpw;
+          lhs[rowR+nearestNode] += tmdot*pecfac*alphaUpw;
 
           // central part
           const double fac = tmdot*(pecfac*om_alphaUpw+om_pecfac);
           for ( int ic = 0; ic < nodesPerFace; ++ic ) {
-            const double r = p_face_shape_function[offSetSF_face+ic];
+            const double r = ws_face_shape_function(ip, ic);
             const int nn = face_node_ordinal_vec[ic];
-            p_lhs[rowR+nn] += r*fac;
+            lhs[rowR+nn] += r*fac;
           }
         }
         else {
 
           // extrainment; advect in from specified value
           const double aflux = tmdot*qIpEntrain;
-          p_rhs[nearestNode] -= aflux;
+          rhs[nearestNode] -= aflux;
         }
       }
 
-      apply_coeff(connected_nodes, rhs, lhs, __FILE__);
-    }
+      apply_coeff(connected_nodes, rhs, lhs, localIdsScratch, __FILE__);
+    });
   });
 }
 
