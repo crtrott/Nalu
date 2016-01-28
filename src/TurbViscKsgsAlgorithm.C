@@ -10,6 +10,7 @@
 #include <TurbViscKsgsAlgorithm.h>
 #include <Algorithm.h>
 #include <FieldTypeDef.h>
+#include <KokkosInterface.h>
 #include <Realm.h>
 
 // stk_mesh/base/fem
@@ -69,22 +70,28 @@ TurbViscKsgsAlgorithm::execute()
 
   stk::mesh::BucketVector const& node_buckets =
     realm_.get_buckets( stk::topology::NODE_RANK, s_all_nodes );
-  for ( stk::mesh::BucketVector::const_iterator ib = node_buckets.begin();
-        ib != node_buckets.end() ; ++ib ) {
-    stk::mesh::Bucket & b = **ib ;
-    const stk::mesh::Bucket::size_type length   = b.size();
+  auto team_exec = get_team_policy(node_buckets.size(), 0, 0);
+  Kokkos::parallel_for("Nalu::TurbViscKsgsAlgorithm::execute",
+      team_exec, [&] (const DeviceTeam & team)
+  {
+    const int ib = team.league_rank();
+    const auto & b = *node_buckets[ib];
+    const auto length = b.size();
 
-    const double *tke = stk::mesh::field_data(*tke_, *b.begin() );
-    const double *density = stk::mesh::field_data(*density_, *b.begin() );
-    const double *dualNodalVolume = stk::mesh::field_data(*dualNodalVolume_, *b.begin() );
-    double *tvisc = stk::mesh::field_data(*tvisc_, *b.begin() );
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k)
+    {
+      const double *tke = stk::mesh::field_data(*tke_, *b.begin() );
+      const double *density = stk::mesh::field_data(*density_, *b.begin() );
+      const double *dualNodalVolume = stk::mesh::field_data(*dualNodalVolume_, *b.begin() );
+      double *tvisc = stk::mesh::field_data(*tvisc_, *b.begin() );
 
-    for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
-      const double filter = std::pow(dualNodalVolume[k], invNdim);
-      // clip tke
-      tvisc[k] = cmuEps*density[k]*std::sqrt(tke[k])*filter;
-    }
-  }
+      for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
+        const double filter = std::pow(dualNodalVolume[k], invNdim);
+        // clip tke
+        tvisc[k] = cmuEps*density[k]*std::sqrt(tke[k])*filter;
+      }
+    });
+  });
 }
 
 } // namespace nalu
