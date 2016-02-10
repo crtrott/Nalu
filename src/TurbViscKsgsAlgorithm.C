@@ -78,18 +78,16 @@ TurbViscKsgsAlgorithm::execute()
     const auto & b = *node_buckets[ib];
     const auto length = b.size();
 
+    const double *tke = stk::mesh::field_data(*tke_, *b.begin() );
+    const double *density = stk::mesh::field_data(*density_, *b.begin() );
+    const double *dualNodalVolume = stk::mesh::field_data(*dualNodalVolume_, *b.begin() );
+    double *tvisc = stk::mesh::field_data(*tvisc_, *b.begin() );
+
     Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k)
     {
-      const double *tke = stk::mesh::field_data(*tke_, *b.begin() );
-      const double *density = stk::mesh::field_data(*density_, *b.begin() );
-      const double *dualNodalVolume = stk::mesh::field_data(*dualNodalVolume_, *b.begin() );
-      double *tvisc = stk::mesh::field_data(*tvisc_, *b.begin() );
-
-      for ( stk::mesh::Bucket::size_type k = 0 ; k < length ; ++k ) {
-        const double filter = std::pow(dualNodalVolume[k], invNdim);
-        // clip tke
-        tvisc[k] = cmuEps*density[k]*std::sqrt(tke[k])*filter;
-      }
+      const double filter = std::pow(dualNodalVolume[k], invNdim);
+      // clip tke
+      tvisc[k] = cmuEps*density[k]*std::sqrt(tke[k])*filter;
     });
   });
 }
