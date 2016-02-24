@@ -13,10 +13,6 @@
 #include <cstdlib>
 #include <stdexcept>
 
-namespace stk {
-struct topology;
-}
-
 namespace sierra{
 namespace nalu{
 

@@ -1,4 +1,5 @@
 *~
+*.o
 /build/CMakeFiles/
 /build/bin/
 /build/libnalu.a

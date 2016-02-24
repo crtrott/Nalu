@@ -316,11 +316,11 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
         ThrowRequire(elemLocalId >= 0 && elemLocalId < numElems);
         for (int i = 0; i < rhsSize; ++i)
         {
-          rhsOut(elemLocalId, i);
+          rhsOut(elemLocalId, i) = rhs_(i);
         }
         for (int i = 0; i < lhsSize; ++i)
         {
-          lhsOut(elemLocalId, i);
+          lhsOut(elemLocalId, i) = lhs_(i);
         }
       });
     });
@@ -369,16 +369,20 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
   inFile.read( (char *) inLhsOut.ptr_on_device(), inLhsOut.capacity() * sizeof(double));
   inFile.read( (char *) inRhsOut.ptr_on_device(), inRhsOut.capacity() * sizeof(double));
 
+  double rhsNorm = 0;
+  double lhsNorm = 0;
   for (int i = 0; i < numElems; ++i)
   {
     for (int j = 0; j < 8; ++j)
     {
       ThrowRequire(elemConnectivity(i, j) == inConnectivity(i, j));
       ThrowRequire(rhsOut(i, j) == inRhsOut(i, j));
+      rhsNorm += rhsOut(i,j)*rhsOut(i,j);
     }
     for (int j = 0; j < maxNodesPerElement*maxNodesPerElement; ++j)
     {
       ThrowRequire(lhsOut(i, j) == inLhsOut(i, j));
+      lhsNorm += lhsOut(i,j)*lhsOut(i,j);
     }
   }
   for (int i = 0; i < totalNodes; ++i)
@@ -398,6 +402,7 @@ AssembleScalarElemDiffSolverAlgorithm::execute()
     }
 
   }
+  std::cout << "Rhs: " << rhsNorm << ", Lhs: " << lhsNorm << std::endl;
   inFile.close();
 }
 

@@ -6,20 +6,15 @@
 /*------------------------------------------------------------------------*/
 
 
-#include <master_element/MasterElement.h>
+#include <MasterElement.h>
 #include <FORTRAN_Proto.h>
 
-#include <stk_topology/topology.hpp>
 
 #include <iostream>
 
 #include <cmath>
 #include <limits>
 #include <array>
-#include "Teuchos_SerialDenseMatrix.hpp"
-#include "Teuchos_SerialDenseVector.hpp"
-#include "Teuchos_SerialDenseSolver.hpp"
-#include "Teuchos_RCP.hpp"
 
 namespace sierra{
 namespace nalu{
@@ -1136,42 +1131,6 @@ HexahedralP2Element::set_quadrature_rule()
 void
 HexahedralP2Element::GLLGLL_quadrature_weights()
 {
-  // for fixed abscissae, use a moment-matching equation to compute weights
-
-  const int nrows = gaussAbscissae1D_.size();
-  const int nrhs = nodes1D_;
-
-  Teuchos::SerialDenseMatrix<int, double> weightLHS(nrows, nrows);
-  for (int j = 0; j < nrows; ++j) {
-    for (int i = 0; i < nrows; ++i) {
-      weightLHS(i, j) = std::pow(gaussAbscissae1D_[j], i);
-    }
-  }
-
-  // each node has a separate RHS
-  Teuchos::SerialDenseMatrix<int, double> weightRHS(nrows, nrhs);
-  for (int j = 0; j < nrhs; ++j) {
-    for (int i = 0; i < nrows; ++i) {
-      weightRHS(i, j) = (std::pow(scsEndLoc_[j + 1], i + 1)
-                       - std::pow(scsEndLoc_[j], i + 1)) / (i + 1.0);
-    }
-  }
-
-  Teuchos::SerialDenseSolver<int, double> solver;
-  Teuchos::SerialDenseMatrix<int, double> quadratureWeights(nrows, nrhs);
-  solver.setMatrix(Teuchos::rcp(&weightLHS, false));
-  solver.setVectors(
-    Teuchos::rcp(&quadratureWeights, false),
-    Teuchos::rcp(&weightRHS, false)
-  );
-  solver.solve();
-
-  gaussWeight_.resize(nrows * nrhs);
-  for (int j = 0; j < nrows; ++j) {
-    for (int i = 0; i < nrhs; ++i) {
-      gaussWeight_[i + j * nrhs] = quadratureWeights(i, j); //transpose
-    }
-  }
 }
 
 //--------------------------------------------------------------------------
@@ -4901,42 +4860,6 @@ QuadrilateralP2Element::set_quadrature_rule()
 void
 QuadrilateralP2Element::GLLGLL_quadrature_weights()
 {
-  // for fixed abscissae, use a moment-matching equation to compute weights
-  // given a heaviside weight function
-  const int nrows = gaussAbscissae1D_.size();
-  const int nrhs = nodes1D_;
-
-  Teuchos::SerialDenseMatrix<int, double> weightLHS(nrows, nrows);
-  for (int j = 0; j < nrows; ++j) {
-    for (int i = 0; i < nrows; ++i) {
-      weightLHS(i, j) = std::pow(gaussAbscissae1D_[j], i);
-    }
-  }
-
-  // each node has a separate RHS
-  Teuchos::SerialDenseMatrix<int, double> weightRHS(nrows, nrhs);
-  for (int j = 0; j < nrhs; ++j) {
-    for (int i = 0; i < nrows; ++i) {
-      weightRHS(i, j) = (std::pow(scsEndLoc_[j + 1], i + 1)
-                       - std::pow(scsEndLoc_[j], i + 1)) / (i + 1.0);
-    }
-  }
-
-  Teuchos::SerialDenseSolver<int, double> solver;
-  Teuchos::SerialDenseMatrix<int, double> quadratureWeights(nrows, nrhs);
-  solver.setMatrix(Teuchos::rcp(&weightLHS, false));
-  solver.setVectors(
-    Teuchos::rcp(&quadratureWeights, false),
-    Teuchos::rcp(&weightRHS, false)
-  );
-  solver.solve();
-
-  gaussWeight_.resize(nrows * nrhs);
-  for (int j = 0; j < nrows; ++j) {
-    for (int i = 0; i < nrhs; ++i) {
-      gaussWeight_[i + j * nrhs] = quadratureWeights(i, j); //transpose
-    }
-  }
 }
 
 //--------------------------------------------------------------------------
