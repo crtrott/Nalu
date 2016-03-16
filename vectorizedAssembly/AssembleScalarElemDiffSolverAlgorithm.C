@@ -128,9 +128,9 @@ void execute()
         auto elemLocalId = inBucketElemLocalIds(ib, k);
         // zero lhs/rhs
         for ( int p = 0; p < lhsSize; ++p )
-          lhs_(p, kk) = 0.0;
+          lhs_(p, v) = 0.0;
         for ( int p = 0; p < rhsSize; ++p )
-          rhs_(p, kk) = 0.0;
+          rhs_(p, v) = 0.0;
 
 
         for ( int ni = 0; ni < nodesPerElement_; ++ni ) {
@@ -140,13 +140,13 @@ void execute()
           const double * coords = & inCoords(nodeLocalId, 0);
 
           // gather scalars
-          p_scalarQ(ni, kk) = inScalarQ(nodeLocalId);
-          p_diffFluxCoeff(ni, kk) = inDiffFluxCoeff(nodeLocalId);
+          p_scalarQ(ni, v) = inScalarQ(nodeLocalId);
+          p_diffFluxCoeff(ni, v) = inDiffFluxCoeff(nodeLocalId);
 
           // gather vectors
           const int offSet = ni*nDim_;
           for ( int j=0; j < nDim_; ++j ) {
-            p_coordinates(ni, j, kk) = coords[j];
+            p_coordinates(ni, j, v) = coords[j];
           }
         }
         }
@@ -159,9 +159,10 @@ void execute()
         int numGradError = 0;
 //        meSCS->determinant(1, &p_coordinates(0, kk), &p_scs_areav(0, kk), &scs_error);
         hex_scs_det<8,12>(p_coordinates,p_scs_areav,v);
-        // compute dndx
-        hex_gradient_operator<8, 12>(p_deriv,  p_coordinates, p_dndx, p_det_j, scs_error, numGradError);
-//        meSCS->grad_op(1, &p_coordinates(0, kk), &p_dndx(0, kk), &p_deriv(0, kk), &p_det_j(0, kk), &scs_error);
+//        // compute dndx
+        hex_derivative<8,12>( p_deriv, v);
+
+        hex_gradient_operator<8, 12>(p_deriv, p_coordinates ,p_dndx, p_det_j, scs_error, numGradError,v);
 
         // start assembly
         for ( int ip = 0; ip < numScsIp; ++ip ) {
@@ -178,7 +179,7 @@ void execute()
           double muIp = 0.0;
           for ( int ic = 0; ic < nodesPerElement_; ++ic ) {
             const double r = shape_function_(ip, ic);
-            muIp += r*p_diffFluxCoeff(ic, kk);
+            muIp += r*p_diffFluxCoeff(ic, v);
           }
 
           double qDiff = 0.0;
@@ -188,30 +189,30 @@ void execute()
             double lhsfacDiff = 0.0;
             const int offSetDnDx = nDim_*nodesPerElement_*ip + ic*nDim_;
             for ( int j = 0; j < nDim_; ++j ) {
-              lhsfacDiff += -muIp*p_dndx(offSetDnDx+j, kk)*p_scs_areav(ip*nDim_+j, kk);
+              lhsfacDiff += -muIp*p_dndx(ip, ic, j, v)*p_scs_areav(ip, j, v);
             }
 
-            qDiff += lhsfacDiff*p_scalarQ(ic, kk);
+            qDiff += lhsfacDiff*p_scalarQ(ic, v);
+
 
             // lhs; il then ir
-            lhs_(rowL+ic, kk) += lhsfacDiff;
-            lhs_(rowR+ic, kk) -= lhsfacDiff;
+            lhs_(rowL+ic, v) += lhsfacDiff;
+            lhs_(rowR+ic, v) -= lhsfacDiff;
           }
-
           // rhs; il then ir
-          rhs_(il, kk) -= qDiff;
-          rhs_(ir, kk) += qDiff;
+          rhs_(il, v) -= qDiff;
+          rhs_(ir, v) += qDiff;
 
         }
 
 
         for (int i = 0; i < rhsSize; ++i)
         {
-          rhsOut(elemLocalId, i) = rhs_(i, kk);
+          rhsOut(elemLocalId, i) = rhs_(i, v);
         }
         for (int i = 0; i < lhsSize; ++i)
         {
-          lhsOut(elemLocalId, i) = lhs_(i, kk);
+          lhsOut(elemLocalId, i) = lhs_(i, v);
         }
         }
       });
@@ -220,21 +221,22 @@ void execute()
   double rhsNorm = 0;
   double lhsNorm = 0;
 
+  constexpr double tolerance = 1.0e-16;
   for (int i = 0; i < inNumElems; ++i)
   {
     for (int j = 0; j < 8; ++j)
     {
-      if(rhsOut(i, j) != inRhsOut(i, j))
+      if(std::abs(rhsOut(i, j) - inRhsOut(i, j)) > tolerance)
       {
-        std::cout << "Error in rhs " << i << ", " << j << std::endl;
+        std::cout << "Error in rhs " << i << ", " << j << " " << inRhsOut(i,j) << ", " << rhsOut(i,j) << ", " << inRhsOut(i,j) - rhsOut(i,j) << std::endl;
       }
       rhsNorm += rhsOut(i,j)*rhsOut(i,j);
     }
     for (int j = 0; j < maxNodesPerElement*maxNodesPerElement; ++j)
     {
-      if(lhsOut(i, j) != inLhsOut(i, j))
+      if(std::abs(lhsOut(i, j) - inLhsOut(i, j)) > tolerance)
       {
-        std::cout << "Error in lhs " << i << ", " << j << std::endl;
+        std::cout << "Error in lhs " << i << ", " << j << ", " << lhsOut(i, j) << ", " << inLhsOut(i, j) << ", " << lhsOut(i, j) - inLhsOut(i, j) << std::endl;
       }
       lhsNorm += lhsOut(i,j)*lhsOut(i,j);
     }
