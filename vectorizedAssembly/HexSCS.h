@@ -6,6 +6,8 @@ namespace nalu {
     {4, 1, 2},
     {4, 2, 3},
     {4, 3, 0}};
+#pragma omp declare simd
+  __attribute__((vector(processor(core_2nd_gen_avx))))
 void inline
 quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<double*[3][16]>& area,const int ics,const int v)
 {
@@ -23,7 +25,7 @@ quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<dou
     area(ics,k,v) = 0.;
     r2[k] = areacoords[0][k] - xmid[k];
   }
-  const int ntriangles = 4;
+  constexpr int ntriangles = 4;
   alignas(64) double r1[3];
   for(int itriangle = 0; itriangle < ntriangles; ++itriangle)
   {
@@ -58,7 +60,9 @@ quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<dou
    {  21, 25, 26, 23}};
 
 
+#pragma omp declare simd
 template<int npe, int nscs>
+  __attribute__((vector(processor(core_2nd_gen_avx))))
 void inline hex_scs_det(const SharedMemView<double*[3][16]>& node_coords, const SharedMemView<double*[3][16]>& area_vec,const int v)
 {
   alignas(64) double coords[27][3];
@@ -126,7 +130,7 @@ void inline hex_scs_det(const SharedMemView<double*[3][16]>& node_coords, const 
     coords[26][i] *= 0.125;
   }
 
-  const int npf = 4;
+  constexpr int npf = 4;
   for(int ics=0; ics < nscs; ++ics)
   {
     for(int inode = 0; inode < npf; ++inode)
@@ -142,7 +146,9 @@ void inline hex_scs_det(const SharedMemView<double*[3][16]>& node_coords, const 
 }
 
 
+#pragma omp declare simd
 template<int npe, int nint>
+  __attribute__((vector(processor(core_2nd_gen_avx))))
 void inline
 hex_derivative(
     SharedMemView<double*[8][3][16]>& deriv,
@@ -207,7 +213,9 @@ hex_derivative(
       }
 }
 
+#pragma omp declare simd
 template<int npe, int nint>
+  __attribute__((vector(processor(core_2nd_gen_avx))))
 void inline
 hex_gradient_operator(
     const SharedMemView<double*[8][3][16]>& deriv,

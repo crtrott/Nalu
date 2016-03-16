@@ -93,9 +93,9 @@ void execute()
       const unsigned length = inBucketNumElems(ib);
 
       // extract master element
-      const int nDim_ = nDim;
-      const int nodesPerElement_ = meSCS->nodesPerElement_;
-      const int numScsIp = meSCS->numIntPoints_;
+      constexpr int nDim_ = 3; //nDim;
+      constexpr int nodesPerElement_ = 8; // meSCS->nodesPerElement_;
+      constexpr int numScsIp = 12; // meSCS->numIntPoints_;
       const int rhsSize = nodesPerElement_;
       const int lhsSize = nodesPerElement_*nodesPerElement_;
 
@@ -150,6 +150,7 @@ void execute()
           }
         }
         }
+#pragma omp simd
         for(int v = 0; v<16; v++) {
         const size_t k = 16*kk + v;
         auto elemLocalId = inBucketElemLocalIds(ib, k);
@@ -188,6 +189,7 @@ void execute()
             // diffusion
             double lhsfacDiff = 0.0;
             const int offSetDnDx = nDim_*nodesPerElement_*ip + ic*nDim_;
+#pragma loop_count(3)
             for ( int j = 0; j < nDim_; ++j ) {
               lhsfacDiff += -muIp*p_dndx(ip, ic, j, v)*p_scs_areav(ip, j, v);
             }
