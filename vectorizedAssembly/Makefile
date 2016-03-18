@@ -1,4 +1,4 @@
-KOKKOS_PATH = ../packages/Trilinos/packages/kokkos
+KOKKOS_PATH = /scratch/vebruni/src/Trilinos/packages/kokkos
 SRC = $(wildcard *.C)
 FSRC = $(wildcard *.F)
 
@@ -17,7 +17,7 @@ KOKKOS_ARCH = "SNB,Kepler35"
 else
 CXX = icc
 #CXXFLAGS = -O0 -g
-CXXFLAGS = -O3 -DKOKKOSP_ENABLE_PROFILING
+CXXFLAGS = -O3 -DKOKKOSP_ENABLE_PROFILING -opt-report=5
 LINK = ${CXX}
 LINKFLAGS =  
 EXE = vectorNalu
