@@ -73,7 +73,8 @@ void execute()
   // TODO: This may substantially overestimate the scratch space needed depending on what
   // element types are actually present. We should investigate whether the cost of this matters
   // and if so consider the Aria approach where a separate algorithm is created per topology.
-  const int bytes_per_thread = 16 * (
+  constexpr int vec_width = 16;
+  const int bytes_per_thread = vec_width * (
       SharedMemView<double *>::shmem_size(maxNodesPerElement) +
       SharedMemView<double *>::shmem_size(maxNodesPerElement) +
       SharedMemView<double *>::shmem_size(maxNodesPerElement*maxDim) +
@@ -103,16 +104,16 @@ void execute()
       SharedMemView<double**> shape_function_(team.team_scratch(scratch_level), numScsIp, nodesPerElement_);
 
       // These are the per-thread handles. Better interface being worked on by Kokkos.
-      SharedMemView<double*[16]> lhs_(team.thread_scratch(scratch_level), lhsSize);
-      SharedMemView<double*[16]> rhs_(team.thread_scratch(scratch_level), rhsSize);
-      SharedMemView<double*[16]> p_scalarQ(team.thread_scratch(scratch_level), nodesPerElement_);
-      SharedMemView<double*[16]> p_diffFluxCoeff(team.thread_scratch(scratch_level), nodesPerElement_);
-      SharedMemView<double*[3][16]> p_coordinates(team.thread_scratch(scratch_level), nodesPerElement_);
-      SharedMemView<double*[3][16]> p_scs_areav(team.thread_scratch(scratch_level), numScsIp);
-      SharedMemView<double*[8][3][16]> p_dndx(team.thread_scratch(scratch_level), numScsIp);
-      SharedMemView<double*[8][3][16]> p_deriv(team.thread_scratch(scratch_level), numScsIp);
-      SharedMemView<double*[16]> p_det_j(team.thread_scratch(scratch_level), numScsIp);
-      SharedMemView<int*[16]> localIdsScratch(team.thread_scratch(scratch_level), rhsSize);
+      SharedMemView<double*[vec_width]> lhs_(team.thread_scratch(scratch_level), lhsSize);
+      SharedMemView<double*[vec_width]> rhs_(team.thread_scratch(scratch_level), rhsSize);
+      SharedMemView<double*[vec_width]> p_scalarQ(team.thread_scratch(scratch_level), nodesPerElement_);
+      SharedMemView<double*[vec_width]> p_diffFluxCoeff(team.thread_scratch(scratch_level), nodesPerElement_);
+      SharedMemView<double*[3][vec_width]> p_coordinates(team.thread_scratch(scratch_level), nodesPerElement_);
+      SharedMemView<double*[3][vec_width]> p_scs_areav(team.thread_scratch(scratch_level), numScsIp);
+      SharedMemView<double*[8][3][vec_width]> p_dndx(team.thread_scratch(scratch_level), numScsIp);
+      SharedMemView<double*[8][3][vec_width]> p_deriv(team.thread_scratch(scratch_level), numScsIp);
+      SharedMemView<double*[vec_width]> p_det_j(team.thread_scratch(scratch_level), numScsIp);
+      SharedMemView<int*[vec_width]> localIdsScratch(team.thread_scratch(scratch_level), rhsSize);
 
       Kokkos::single(Kokkos::PerTeam(team), [&]() {
         meSCS->shape_fcn(&shape_function_(0, 0));
@@ -121,9 +122,9 @@ void execute()
 
       auto lrscv = meSCS->adjacentNodes();
 
-      Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length/16), [&] (const size_t kk) {
-        for(int v = 0; v<16; v++) {
-        const size_t k = 16*kk + v;
+      Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length/vec_width), [&] (const size_t kk) {
+        for(int v = 0; v<vec_width; v++) {
+        const size_t k = vec_width*kk + v;
 
         auto elemLocalId = inBucketElemLocalIds(ib, k);
         // zero lhs/rhs
@@ -151,16 +152,13 @@ void execute()
         }
         }
 #pragma omp simd
-        for(int v = 0; v<16; v++) {
-        const size_t k = 16*kk + v;
-        auto elemLocalId = inBucketElemLocalIds(ib, k);
+        for(int v = 0; v<vec_width; v++) {
+        const size_t k = vec_width*kk + v;
 
         // compute geometry
         double scs_error = 0.0;
         int numGradError = 0;
-//        meSCS->determinant(1, &p_coordinates(0, kk), &p_scs_areav(0, kk), &scs_error);
         hex_scs_det<8,12>(p_coordinates,p_scs_areav,v);
-//        // compute dndx
         hex_derivative<8,12>( p_deriv, v);
 
         hex_gradient_operator<8, 12>(p_deriv, p_coordinates ,p_dndx, p_det_j, scs_error, numGradError,v);
@@ -189,7 +187,6 @@ void execute()
             // diffusion
             double lhsfacDiff = 0.0;
             const int offSetDnDx = nDim_*nodesPerElement_*ip + ic*nDim_;
-#pragma loop_count(3)
             for ( int j = 0; j < nDim_; ++j ) {
               lhsfacDiff += -muIp*p_dndx(ip, ic, j, v)*p_scs_areav(ip, j, v);
             }
@@ -208,6 +205,7 @@ void execute()
         }
 
 
+        auto elemLocalId = inBucketElemLocalIds(ib, k);
         for (int i = 0; i < rhsSize; ++i)
         {
           rhsOut(elemLocalId, i) = rhs_(i, v);
