@@ -168,12 +168,24 @@ void execute()
         hex_gradient_operator<8, 12>(p_deriv, p_coordinates ,p_dndx, p_det_j, scs_error, numGradError,v);
         }
 
+        double muIp[vec_width];
+
         // With vec_width=16 having simd pragma here is faster
 #pragma omp simd
         for(int v = 0; v<vec_width; v++) {
-        // start assembly
         for ( int ip = 0; ip < numScsIp; ++ip ) {
+          // save off ip values; offset to Shape Function
+          muIp[v] = 0.0;
+          for ( int ic = 0; ic < nodesPerElement_; ++ic ) {
+            const double r = shape_function_(ip, ic);
+            muIp[v] += r*p_diffFluxCoeff(ic, v);
+          }
+        }
+        }
 
+#pragma omp simd
+        for(int v = 0; v<vec_width; v++) {
+        for ( int ip = 0; ip < numScsIp; ++ip ) {
           // left and right nodes for this ip
           const int il = lrscv[2*ip];
           const int ir = lrscv[2*ip+1];
@@ -182,13 +194,6 @@ void execute()
           const int rowL = il*nodesPerElement_;
           const int rowR = ir*nodesPerElement_;
 
-          // save off ip values; offset to Shape Function
-          double muIp = 0.0;
-          for ( int ic = 0; ic < nodesPerElement_; ++ic ) {
-            const double r = shape_function_(ip, ic);
-            muIp += r*p_diffFluxCoeff(ic, v);
-          }
-
           double qDiff = 0.0;
           for ( int ic = 0; ic < nodesPerElement_; ++ic ) {
 
@@ -196,7 +201,7 @@ void execute()
             double lhsfacDiff = 0.0;
             const int offSetDnDx = nDim_*nodesPerElement_*ip + ic*nDim_;
             for ( int j = 0; j < nDim_; ++j ) {
-              lhsfacDiff += -muIp*p_dndx(ip, ic, j, v)*p_scs_areav(ip, j, v);
+              lhsfacDiff += -muIp[v]*p_dndx(ip, ic, j, v)*p_scs_areav(ip, j, v);
             }
 
             qDiff += lhsfacDiff*p_scalarQ(ic, v);
@@ -211,8 +216,11 @@ void execute()
           rhs_(ir, v) += qDiff;
 
         }
+        }
 
 
+#pragma omp simd
+        for(int v = 0; v<vec_width; v++) {
         const size_t k = vec_width*kk + v;
         auto elemLocalId = inBucketElemLocalIds(ib, k);
         for (int i = 0; i < rhsSize; ++i)
