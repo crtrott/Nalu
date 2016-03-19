@@ -73,7 +73,6 @@ void execute()
   // TODO: This may substantially overestimate the scratch space needed depending on what
   // element types are actually present. We should investigate whether the cost of this matters
   // and if so consider the Aria approach where a separate algorithm is created per topology.
-  constexpr int vec_width = 16;
   const int bytes_per_thread = vec_width * (
       SharedMemView<double *>::shmem_size(maxNodesPerElement) +
       SharedMemView<double *>::shmem_size(maxNodesPerElement) +
@@ -151,18 +150,27 @@ void execute()
           }
         }
         }
+        // With vec_width=16 having simd pragma here is slower
+        for(int v = 0; v<vec_width; v++) {
+        // compute geometry
+        hex_scs_det<8,12>(p_coordinates,p_scs_areav,v);
+        }
+        // With vec_width=16 having simd pragma here is faster
 #pragma omp simd
         for(int v = 0; v<vec_width; v++) {
-        const size_t k = vec_width*kk + v;
+        hex_derivative<8,12>( p_deriv, v);
+        }
 
-        // compute geometry
+        // With vec_width=16 having simd pragma here is slower
+        for(int v = 0; v<vec_width; v++) {
         double scs_error = 0.0;
         int numGradError = 0;
-        hex_scs_det<8,12>(p_coordinates,p_scs_areav,v);
-        hex_derivative<8,12>( p_deriv, v);
-
         hex_gradient_operator<8, 12>(p_deriv, p_coordinates ,p_dndx, p_det_j, scs_error, numGradError,v);
+        }
 
+        // With vec_width=16 having simd pragma here is faster
+#pragma omp simd
+        for(int v = 0; v<vec_width; v++) {
         // start assembly
         for ( int ip = 0; ip < numScsIp; ++ip ) {
 
@@ -205,6 +213,7 @@ void execute()
         }
 
 
+        const size_t k = vec_width*kk + v;
         auto elemLocalId = inBucketElemLocalIds(ib, k);
         for (int i = 0; i < rhsSize; ++i)
         {

@@ -1,6 +1,8 @@
 namespace sierra {
 namespace nalu {
 
+  static constexpr int vec_width = 4;
+
   static constexpr int triangularFacetTable[4][3] = {
     {4, 0, 1},
     {4, 1, 2},
@@ -9,7 +11,7 @@ namespace nalu {
 #pragma omp declare simd
   __attribute__((vector(processor(core_2nd_gen_avx))))
 void inline
-quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<double*[3][16]>& area,const int ics,const int v)
+quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<double*[3][vec_width]>& area,const int ics,const int v)
 {
   /*constexpr int triangularFacetTable[4][3] = {
     {4, 0, 1},
@@ -63,7 +65,7 @@ quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<dou
 #pragma omp declare simd
 template<int npe, int nscs>
   __attribute__((vector(processor(core_2nd_gen_avx))))
-void inline hex_scs_det(const SharedMemView<double*[3][16]>& node_coords, const SharedMemView<double*[3][16]>& area_vec,const int v)
+void inline hex_scs_det(const SharedMemView<double*[3][vec_width]>& node_coords, const SharedMemView<double*[3][vec_width]>& area_vec,const int v)
 {
   alignas(64) double coords[27][3];
   alignas(64) double scscoords[4][3];
@@ -151,7 +153,7 @@ template<int npe, int nint>
   __attribute__((vector(processor(core_2nd_gen_avx))))
 void inline
 hex_derivative(
-    SharedMemView<double*[8][3][16]>& deriv,
+    SharedMemView<double*[8][3][vec_width]>& deriv,
     int v
     )
 {
@@ -218,10 +220,10 @@ template<int npe, int nint>
   __attribute__((vector(processor(core_2nd_gen_avx))))
 void inline
 hex_gradient_operator(
-    const SharedMemView<double*[8][3][16]>& deriv,
-    const SharedMemView<double*[3][16]>& node_coords,
-    SharedMemView<double*[8][3][16]>& gradop,
-    SharedMemView<double*[16]>& detj,
+    const SharedMemView<double*[8][3][vec_width]>& deriv,
+    const SharedMemView<double*[3][vec_width]>& node_coords,
+    SharedMemView<double*[8][3][vec_width]>& gradop,
+    SharedMemView<double*[vec_width]>& detj,
     double & err,
     int & nerr,
     int v)
