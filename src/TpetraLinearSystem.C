@@ -870,8 +870,6 @@ TpetraLinearSystem::finalizeLinearSystem()
   });
   connectionSetKK_.clear();
 
-  std::sort(connectionVec.begin(), connectionVec.end());
-
   std::vector<GlobalOrdinal> globalDofs_a(numDof_);
   std::vector<GlobalOrdinal> globalDofs_b(numDof_);
   std::ostringstream out2;
