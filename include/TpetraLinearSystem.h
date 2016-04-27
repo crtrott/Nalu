@@ -25,6 +25,8 @@
 #include <string>
 #include <boost/unordered_map.hpp>
 
+#include <Kokkos_UnorderedMap.hpp>
+
 namespace stk {
 namespace mesh {
   typedef uint64_t EntityId;
@@ -127,13 +129,16 @@ private:
     const Teuchos::RCP<LinSys::MultiVector> tpetraVector);
 
   void addConnections(const std::vector<stk::mesh::Entity> & entities);
+  int addConnectionsKK(const stk::mesh::Entity* entities,const size_t&);
   void checkForNaN(bool useOwned);
   bool checkForZeroRow(bool useOwned, bool doThrow, bool doPrint=false);
 
   typedef std::pair<stk::mesh::Entity, stk::mesh::Entity> Connection;
   typedef std::set< Connection > ConnectionSet;
+  typedef Kokkos::UnorderedMap<Connection,void> ConnectionSetKK;
   typedef std::vector< Connection > ConnectionVec;
   ConnectionSet connectionSet_;
+  ConnectionSetKK connectionSetKK_ ;
   std::vector<GlobalOrdinal> totalGids_;
 
   Teuchos::RCP<LinSys::Node>   node_;

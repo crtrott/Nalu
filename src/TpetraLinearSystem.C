@@ -62,7 +62,7 @@
 #include <limits>
 
 #include <sstream>
-
+#define KK_MAP
 namespace sierra{
 namespace nalu{
 
@@ -367,9 +367,11 @@ TpetraLinearSystem::beginLinearSystemConstruction()
   ownedPlusGloballyOwnedRowsMap_ = Teuchos::rcp(new LinSys::Map(Teuchos::OrdinalTraits<Tpetra::global_size_t>::invalid(), totalGids_, 1, tpetraComm, node_));
 
   globallyOwnedGraph_ = Teuchos::rcp(new LinSys::Graph(globallyOwnedRowsMap_, ownedPlusGloballyOwnedRowsMap_, 8));
-
+ 
   // Now, we're ready to have Algs call the build*Graph() methods and build up the connection list (row,col).
   // We'll finish this off in finalizeLinearSystem()
+  //std::cout<<" Estimate Entries: 1.25*numOwnedRows: "<<numOwnedNodes<<std::endl;
+  connectionSetKK_ = ConnectionSetKK(15*numOwnedNodes);
 }
 
 void TpetraLinearSystem::addConnections(const std::vector<stk::mesh::Entity> & entities)
@@ -394,6 +396,34 @@ void TpetraLinearSystem::addConnections(const std::vector<stk::mesh::Entity> & e
       connectionSet_.insert( Connection(entity_min, entity_max) );
     }
   }
+}
+
+int TpetraLinearSystem::addConnectionsKK(const stk::mesh::Entity* entities, const size_t& num_entities)
+{
+  int fail_count = 0;
+  stk::mesh::BulkData & bulkData = realm_.bulk_data();
+  const unsigned p_rank = bulkData.parallel_rank();
+  (void)p_rank;
+
+  //const size_t num_entities = entities.size();
+  //KOKKOS: nested Loop connectionSet insert noparallel (std::set)
+  for(size_t a=0; a < num_entities; ++a) {
+    const stk::mesh::Entity entity_a = entities[a];
+    const stk::mesh::EntityId id_a = *stk::mesh::field_data(*realm_.naluGlobalId_, entity_a);
+
+    //KOKKOS: nested Loop connectionSet insert noparallel (std::set)
+    for(size_t b=0; b < num_entities; ++b) {
+      const stk::mesh::Entity entity_b = entities[b];
+      const stk::mesh::EntityId id_b = *stk::mesh::field_data(*realm_.naluGlobalId_, entity_b);
+      const bool a_then_b = id_a < id_b;
+      const stk::mesh::Entity entity_min = a_then_b ? entity_a : entity_b;
+      const stk::mesh::Entity entity_max = a_then_b ? entity_b : entity_a;
+      //printf("Entity: %lu %lu\n",reinterpret_cast<const std::size_t&>(entity_min),tbb_hash_entity()((Connection(entity_min,entity_max))));
+      auto insert_result = connectionSetKK_.insert( Connection(entity_min, entity_max) );
+      fail_count += insert_result.failed() ? 1 : 0;
+    }
+  }
+  return fail_count;
 }
 
 void
@@ -500,12 +530,14 @@ TpetraLinearSystem::buildElemToNodeGraph(const stk::mesh::PartVector & parts)
     & stk::mesh::selectUnion(parts) 
     & !(realm_.get_inactive_selector());
 
+  connectionSetKK_.reset_failed_insert_flag();
   stk::mesh::BucketVector const& buckets =
     realm_.get_buckets( stk::topology::ELEMENT_RANK, s_owned );
   std::vector<stk::mesh::Entity> entities;
   //KOKKOS: BucketLoop noparallel addConncetions insert (std::set)
-  Kokkos::parallel_for("Nalu::TpetraLinearSystem::buildElemToNodeGraph",
-    Kokkos::RangePolicy<Kokkos::Serial>(0, buckets.size()), [&] (const int& ib) {
+  int insert_failure_count = 0;
+  Kokkos::parallel_reduce("Nalu::TpetraLinearSystem::buildElemToNodeGraph",
+    Kokkos::RangePolicy<Kokkos::OpenMP>(0,buckets.size()), [&] (const int& ib, int & fail_count) {
     const stk::mesh::Bucket & b = *buckets[ib];
     const stk::mesh::Bucket::size_type length   = b.size();
     //KOKKOS: BucketLoop noparallel addConncetions insert (std::set)
@@ -513,14 +545,20 @@ TpetraLinearSystem::buildElemToNodeGraph(const stk::mesh::PartVector & parts)
       stk::mesh::Entity const * elem_nodes = b.begin_nodes(k);
       // figure out the global dof ids for each dof on each node
       const size_t numNodes = b.num_nodes(k);
-      entities.resize(numNodes);
+      stk::mesh::Entity entities[numNodes];
       //KOKKOS: nested Loop parallel
       for(size_t n=0; n < numNodes; ++n) {
         entities[n] = elem_nodes[n];
       }
-      addConnections(entities);
+      fail_count += addConnectionsKK(entities,numNodes);
     }
-  });
+  }, insert_failure_count);
+  if(insert_failure_count > 0)
+  {
+    connectionSetKK_ = ConnectionSetKK(connectionSetKK_.capacity() + insert_failure_count);
+    buildElemToNodeGraph(parts);
+  }
+  //std::cout<<"KK HashTableSize: "<<connectionSetKK_.size() << " failed_inserts:" << connectionSetKK_.failed_insert() << " load_factor:" << 1.0*connectionSetKK_.size()/connectionSetKK_.capacity() << std::endl;
 }
 
 void
@@ -819,8 +857,19 @@ TpetraLinearSystem::finalizeLinearSystem()
   const int this_mpi_rank = bulkData.parallel_rank();
   (void)this_mpi_rank;
 
-  ConnectionVec connectionVec(connectionSet_.begin(), connectionSet_.end());
-  connectionSet_.clear();
+  ConnectionVec connectionVec(connectionSetKK_.size());
+  Kokkos::parallel_scan("Nalu::TpetraLinearSystem::finalizeLinearSystemAA",
+      connectionSetKK_.capacity(), [&] (const int& i, int & ikk, const bool final) {
+    if(connectionSetKK_.valid_at(i))
+    {
+      if(final)
+        connectionVec[ikk] = connectionSetKK_.key_at(i);
+
+      ikk++;
+    }
+  });
+  connectionSetKK_.clear();
+
   std::sort(connectionVec.begin(), connectionVec.end());
 
   std::vector<GlobalOrdinal> globalDofs_a(numDof_);
