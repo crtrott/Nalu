@@ -1,4 +1,4 @@
-KOKKOS_PATH = /scratch/vebruni/src/Trilinos/packages/kokkos
+KOKKOS_PATH = ../packages/Trilinos/packages/kokkos
 SRC = $(wildcard *.C)
 FSRC = $(wildcard *.F)
 

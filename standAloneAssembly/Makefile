@@ -14,7 +14,8 @@ EXE = $(SRC:.cpp=.cuda)
 KOKKOS_DEVICES = "Cuda,OpenMP"
 KOKKOS_ARCH = "SNB,Kepler35"
 else
-CXX = g++
+CXX = icc
+#CXXFLAGS = -O0 -g
 CXXFLAGS = -O3 -DKOKKOSP_ENABLE_PROFILING
 LINK = ${CXX}
 LINKFLAGS =  
