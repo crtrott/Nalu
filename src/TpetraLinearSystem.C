@@ -872,8 +872,8 @@ TpetraLinearSystem::finalizeLinearSystem()
 
   std::sort(connectionVec.begin(), connectionVec.end());
 
-  std::vector<LocalOrdinal> localDofs_a(numDof_);
-  std::vector<LocalOrdinal> localDofs_b(numDof_);
+  std::vector<GlobalOrdinal> globalDofs_a(numDof_);
+  std::vector<GlobalOrdinal> globalDofs_b(numDof_);
   std::ostringstream out2;
   const size_t numConnections = connectionVec.size();
    //KOKKOS: Loop noparallel Graph insertGlobalIndices
@@ -884,13 +884,11 @@ TpetraLinearSystem::finalizeLinearSystem()
 
     const stk::mesh::EntityId entityId_a = *stk::mesh::field_data(*realm_.naluGlobalId_, entity_a);
     const stk::mesh::EntityId entityId_b = *stk::mesh::field_data(*realm_.naluGlobalId_, entity_b);
-    const auto lid_a = myLIDs_.at(entityId_a);
-    const auto lid_b = myLIDs_.at(entityId_b);
 
     //KOKKOS: small Loop parallel
     for (size_t d=0; d < numDof_; ++d) {
-      localDofs_a[d] = LID_(lid_a, numDof_ , d);
-      localDofs_b[d] = LID_(lid_b, numDof_ , d);
+      globalDofs_a[d] = GID_(entityId_a, numDof_ , d);
+      globalDofs_b[d] = GID_(entityId_b, numDof_ , d);
     }
 
     // NOTE: 'Connections' should already include the self
@@ -903,8 +901,8 @@ TpetraLinearSystem::finalizeLinearSystem()
 
       //KOKKOS: small Loop noparallel insertGlobalIndices
       for (size_t d=0; d < numDof_; ++d) {
-        const LocalOrdinal localRow_a = LID_(lid_a, numDof_, d) - maxOwnedRowId_;
-        globallyOwnedGraph_->insertLocalIndices(localRow_a, localDofs_b);
+        const GlobalOrdinal globalRow_a = GID_(entityId_a, numDof_, d);
+        globallyOwnedGraph_->insertGlobalIndices(globalRow_a, globalDofs_b);
       }
     }
 
@@ -912,8 +910,8 @@ TpetraLinearSystem::finalizeLinearSystem()
     if (getDofStatus(entity_b) & DS_GloballyOwnedDOF) { // !Locally owned
       //KOKKOS: small Loop noparallel insertGlobalIndices
       for (size_t d=0; d < numDof_; ++d) {
-        const LocalOrdinal localRow_b = LID_(lid_b, numDof_, d) - maxOwnedRowId_;
-        globallyOwnedGraph_->insertLocalIndices(localRow_b, localDofs_a);
+        const GlobalOrdinal globalRow_b = GID_(entityId_b, numDof_ , d);
+        globallyOwnedGraph_->insertGlobalIndices(globalRow_b, globalDofs_a);
       }
     }
   });
@@ -949,13 +947,11 @@ TpetraLinearSystem::finalizeLinearSystem()
 
     const stk::mesh::EntityId entityId_a = *stk::mesh::field_data(*realm_.naluGlobalId_, entity_a);
     const stk::mesh::EntityId entityId_b = *stk::mesh::field_data(*realm_.naluGlobalId_, entity_b);
-    const auto lid_a = myLIDs_.at(entityId_a);
-    const auto lid_b = myLIDs_.at(entityId_b);
 
     //KOKKOS: small Loop noparallel insertGlobalIndices
     for (size_t d=0; d < numDof_; ++d) {
-      localDofs_a[d] = LID_(lid_a, numDof_, d);
-      localDofs_b[d] = LID_(lid_a, numDof_, d);
+      globalDofs_a[d] = GID_(entityId_a, numDof_, d);
+      globalDofs_b[d] = GID_(entityId_b, numDof_, d);
     }
 
     // NOTE: 'Connections' should already include the self
@@ -966,16 +962,16 @@ TpetraLinearSystem::finalizeLinearSystem()
     if (getDofStatus(entity_a) & DS_OwnedDOF) { // Locally owned
       //KOKKOS: small Loop noparallel insertGlobalIndices
       for (size_t d=0; d < numDof_; ++d) {
-        const GlobalOrdinal localRow_a = LID_(lid_a, numDof_ , d);
-        ownedGraph_->insertLocalIndices(localRow_a, localDofs_b);
+        const GlobalOrdinal globalRow_a = GID_(entityId_a, numDof_ , d);
+        ownedGraph_->insertGlobalIndices(globalRow_a, globalDofs_b);
       }
     }
 
     if (getDofStatus(entity_b) & DS_OwnedDOF) { // Locally owned
       //KOKKOS: small Loop noparallel insertGlobalIndices
       for (size_t d=0; d < numDof_; ++d) {
-        const GlobalOrdinal localRow_b = LID_(lid_b, numDof_ , d);
-        ownedGraph_->insertLocalIndices(localRow_b, localDofs_a);
+        const GlobalOrdinal globalRow_b = GID_(entityId_b, numDof_ , d);
+        ownedGraph_->insertGlobalIndices(globalRow_b, globalDofs_a);
       }
     }
   });
@@ -985,21 +981,21 @@ TpetraLinearSystem::finalizeLinearSystem()
     const LinSys::Map & rowMap = *ownedPlusGloballyOwnedGraph.getRowMap();
     const LinSys::Map & colMap = *ownedPlusGloballyOwnedGraph.getColMap();
     const size_t numRows = rowMap.getNodeNumElements();
-    std::vector<LocalOrdinal> newLocalInd;
+    std::vector<GlobalOrdinal> newInd;
     //KOKKOS: Loop noparallel Graph insertGlobalIndices
     Kokkos::parallel_for("Nalu::TpetraLinearSystem::finalizeLinearSystemB",
       Kokkos::RangePolicy<Kokkos::Serial>(0,numRows), [&] (const size_t& localRow) {
+      const GlobalOrdinal row = rowMap.getGlobalElement(localRow);
       Teuchos::ArrayView<const LocalOrdinal> ind;
       ownedPlusGloballyOwnedGraph.getLocalRowView(localRow, ind);
       const size_t numInd = ind.size();
-      newLocalInd.resize(numInd);
+      newInd.resize(numInd);
       //KOKKOS: nested Loop parallel
       for(size_t j=0; j < numInd; ++j)
         {
-          auto newInd = colMap.getGlobalElement(ind[j]);
-          newLocalInd[j] = totalColsMap_->getLocalElement(newInd);
+          newInd[j] = colMap.getGlobalElement(ind[j]);
         }
-      ownedGraph_->insertLocalIndices(localRow, newLocalInd);
+      ownedGraph_->insertGlobalIndices(row, newInd);
     });
   }
   ownedGraph_->fillComplete(ownedRowsMap_, ownedRowsMap_);
