@@ -953,7 +953,7 @@ TpetraLinearSystem::finalizeLinearSystem()
     //KOKKOS: small Loop noparallel insertGlobalIndices
     for (size_t d=0; d < numDof_; ++d) {
       localDofs_a[d] = LID_(lid_a, numDof_, d);
-      localDofs_b[d] = LID_(lid_a, numDof_, d);
+      localDofs_b[d] = LID_(lid_b, numDof_, d);
     }
 
     // NOTE: 'Connections' should already include the self
