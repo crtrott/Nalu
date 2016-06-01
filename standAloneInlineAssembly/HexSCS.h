@@ -1,17 +1,14 @@
 namespace sierra {
 namespace nalu {
 
-  static constexpr int vec_width = 4;
-
   static constexpr int triangularFacetTable[4][3] = {
     {4, 0, 1},
     {4, 1, 2},
     {4, 2, 3},
     {4, 3, 0}};
-#pragma omp declare simd
-  __attribute__((vector(processor(core_2nd_gen_avx))))
+
 void inline
-quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<double*[3][vec_width]>& area,const int ics,const int v)
+quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<double*[3]>& area, const int ics)
 {
   /*constexpr int triangularFacetTable[4][3] = {
     {4, 0, 1},
@@ -19,12 +16,12 @@ quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<dou
     {4, 2, 3},
     {4, 3, 0}};
 */
-  alignas(64) double xmid[3];
-  alignas(64) double r2[3];
+  double xmid[3];
+  double r2[3];
   for(int k=0; k < 3; ++k)
   {
     xmid[k] = 0.25 * (areacoords[0][k] + areacoords[1][k] + areacoords[2][k] + areacoords[3][k]);
-    area(ics,k,v) = 0.;
+    area(ics,k) = 0.;
     r2[k] = areacoords[0][k] - xmid[k];
   }
   constexpr int ntriangles = 4;
@@ -37,13 +34,13 @@ quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<dou
       r1[k] = r2[k];
       r2[k] = areacoords[iq][k] - xmid[k];
     }
-    area(ics,0,v) += r1[1]*r2[2] - r2[1]*r1[2];
-    area(ics,1,v) += r1[2]*r2[0] - r2[2]*r1[0];
-    area(ics,2,v) += r1[0]*r2[1] - r2[0]*r1[1];
+    area(ics,0) += r1[1]*r2[2] - r2[1]*r1[2];
+    area(ics,1) += r1[2]*r2[0] - r2[2]*r1[0];
+    area(ics,2) += r1[0]*r2[1] - r2[0]*r1[1];
   }
   for(int k=0; k < 3; ++k)
   {
-    area(ics,k,v) *= 0.5;
+    area(ics,k) *= 0.5;
   }
 }
 
@@ -62,13 +59,11 @@ quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<dou
    {  21, 25, 26, 23}};
 
 
-#pragma omp declare simd
 template<int npe, int nscs>
-  __attribute__((vector(processor(core_2nd_gen_avx))))
-void inline hex_scs_det(const SharedMemView<double*[3][vec_width]>& node_coords, const SharedMemView<double*[3][vec_width]>& area_vec,const int v)
+void inline hex_scs_det(const SharedMemView<double*[3]>& node_coords, const SharedMemView<double*[3]>& area_vec)
 {
-  alignas(64) double coords[27][3];
-  alignas(64) double scscoords[4][3];
+  double coords[27][3];
+  double scscoords[4][3];
   /*constexpr int hex_edge_facet_table[12][4] = {
    {   20, 8, 12, 26},
    {  24,  9, 12, 26},
@@ -87,47 +82,47 @@ void inline hex_scs_det(const SharedMemView<double*[3][vec_width]>& node_coords,
   {
     for(int j=0; j < 3; ++j)
     {
-      coords[i][j] = node_coords(i,j,v);
+      coords[i][j] = node_coords(i,j);
     }
   }
 
   for(int i=0; i < 3; ++i)
   {
     // Face 1
-    coords[8][i] = 0.5 * (node_coords(0,i,v) + node_coords(1,i,v));
-    coords[9][i] = 0.5 * (node_coords(1,i,v) + node_coords(2,i,v));
-    coords[10][i] = 0.5 * (node_coords(2,i,v) + node_coords(3,i,v));
-    coords[11][i] = 0.5 * (node_coords(3,i,v) + node_coords(0,i,v));
-    coords[12][i] = 0.25 * (node_coords(0,i,v) + node_coords(1,i,v) + node_coords(2,i,v) + node_coords(3,i,v));
+    coords[8][i] = 0.5 * (node_coords(0,i) + node_coords(1,i));
+    coords[9][i] = 0.5 * (node_coords(1,i) + node_coords(2,i));
+    coords[10][i] = 0.5 * (node_coords(2,i) + node_coords(3,i));
+    coords[11][i] = 0.5 * (node_coords(3,i) + node_coords(0,i));
+    coords[12][i] = 0.25 * (node_coords(0,i) + node_coords(1,i) + node_coords(2,i) + node_coords(3,i));
 
     // Face 2
-    coords[13][i] = 0.5 * (node_coords(4,i,v) + node_coords(5,i,v));
-    coords[14][i] = 0.5 * (node_coords(5,i,v) + node_coords(6,i,v));
-    coords[15][i] = 0.5 * (node_coords(6,i,v) + node_coords(7,i,v));
-    coords[16][i] = 0.5 * (node_coords(7,i,v) + node_coords(4,i,v));
-    coords[17][i] = 0.25 * (node_coords(4,i,v) + node_coords(5,i,v) + node_coords(6,i,v) + node_coords(7,i,v));
+    coords[13][i] = 0.5 * (node_coords(4,i) + node_coords(5,i));
+    coords[14][i] = 0.5 * (node_coords(5,i) + node_coords(6,i));
+    coords[15][i] = 0.5 * (node_coords(6,i) + node_coords(7,i));
+    coords[16][i] = 0.5 * (node_coords(7,i) + node_coords(4,i));
+    coords[17][i] = 0.25 * (node_coords(4,i) + node_coords(5,i) + node_coords(6,i) + node_coords(7,i));
 
     // Face 3
-    coords[18][i] = 0.5 * (node_coords(1,i,v) + node_coords(5,i,v));
-    coords[19][i] = 0.5 * (node_coords(0,i,v) + node_coords(4,i,v));
-    coords[20][i] = 0.25 * (node_coords(0,i,v) + node_coords(1,i,v) + node_coords(4,i,v) + node_coords(5,i,v));
+    coords[18][i] = 0.5 * (node_coords(1,i) + node_coords(5,i));
+    coords[19][i] = 0.5 * (node_coords(0,i) + node_coords(4,i));
+    coords[20][i] = 0.25 * (node_coords(0,i) + node_coords(1,i) + node_coords(4,i) + node_coords(5,i));
 
     // Face 4
-    coords[21][i] = 0.5 * (node_coords(3,i,v) + node_coords(7,i,v));
-    coords[22][i] = 0.5 * (node_coords(2,i,v) + node_coords(6,i,v));
-    coords[23][i] = 0.25 * (node_coords(2,i,v) + node_coords(3,i,v) + node_coords(6,i,v) + node_coords(7,i,v));
+    coords[21][i] = 0.5 * (node_coords(3,i) + node_coords(7,i));
+    coords[22][i] = 0.5 * (node_coords(2,i) + node_coords(6,i));
+    coords[23][i] = 0.25 * (node_coords(2,i) + node_coords(3,i) + node_coords(6,i) + node_coords(7,i));
 
     // Face 5
-    coords[24][i] = 0.25 * (node_coords(1,i,v) + node_coords(2,i,v) + node_coords(5,i,v) + node_coords(6,i,v));
+    coords[24][i] = 0.25 * (node_coords(1,i) + node_coords(2,i) + node_coords(5,i) + node_coords(6,i));
 
     // Face 7
-    coords[25][i] = 0.25 * (node_coords(0,i,v) + node_coords(3,i,v) + node_coords(4,i,v) + node_coords(7,i,v));
+    coords[25][i] = 0.25 * (node_coords(0,i) + node_coords(3,i) + node_coords(4,i) + node_coords(7,i));
 
     // Volume centroid
     coords[26][i] = 0.;
     for(int nd = 0; nd < 8; ++nd)
     {
-      coords[26][i] += node_coords(nd,i,v);
+      coords[26][i] += node_coords(nd,i);
     }
     coords[26][i] *= 0.125;
   }
@@ -143,18 +138,15 @@ void inline hex_scs_det(const SharedMemView<double*[3][vec_width]>& node_coords,
         scscoords[inode][d] = coords[itrianglenode][d];
       }
     }
-    quadAreaByTriangleFacets(scscoords, area_vec,ics,v);
+    quadAreaByTriangleFacets(scscoords, area_vec,ics);
   }
 }
 
 
-#pragma omp declare simd
 template<int npe, int nint>
-  __attribute__((vector(processor(core_2nd_gen_avx))))
 void inline
 hex_derivative(
-    SharedMemView<double*[8][3][vec_width]>& deriv,
-    int v
+    SharedMemView<double*[8][3]>& deriv
     )
 {
       double half, one4th;
@@ -184,49 +176,47 @@ hex_derivative(
          double s1s3 = s1*s3;
 
          // shape function derivative in the s1 direction -
-         deriv(j,0,0,v) = half*( s3 + s2 ) - s2s3 - one4th;
-         deriv(j,1,0,v) = half*(-s3 - s2 ) + s2s3 + one4th;
-         deriv(j,2,0,v) = half*(-s3 + s2 ) - s2s3 + one4th;
-         deriv(j,3,0,v) = half*(+s3 - s2 ) + s2s3 - one4th;
-         deriv(j,4,0,v) = half*(-s3 + s2 ) + s2s3 - one4th;
-         deriv(j,5,0,v) = half*(+s3 - s2 ) - s2s3 + one4th;
-         deriv(j,6,0,v) = half*(+s3 + s2 ) + s2s3 + one4th;
-         deriv(j,7,0,v) = half*(-s3 - s2 ) - s2s3 - one4th;
+         deriv(j,0,0) = half*( s3 + s2 ) - s2s3 - one4th;
+         deriv(j,1,0) = half*(-s3 - s2 ) + s2s3 + one4th;
+         deriv(j,2,0) = half*(-s3 + s2 ) - s2s3 + one4th;
+         deriv(j,3,0) = half*(+s3 - s2 ) + s2s3 - one4th;
+         deriv(j,4,0) = half*(-s3 + s2 ) + s2s3 - one4th;
+         deriv(j,5,0) = half*(+s3 - s2 ) - s2s3 + one4th;
+         deriv(j,6,0) = half*(+s3 + s2 ) + s2s3 + one4th;
+         deriv(j,7,0) = half*(-s3 - s2 ) - s2s3 - one4th;
          //
          // shape function derivative in the s2 direction -
-         deriv(j,0,1,v) = half*( s3 + s1 ) - s1s3 - one4th;
-         deriv(j,1,1,v) = half*( s3 - s1 ) + s1s3 - one4th;
-         deriv(j,2,1,v) = half*(-s3 + s1 ) - s1s3 + one4th;
-         deriv(j,3,1,v) = half*(-s3 - s1 ) + s1s3 + one4th;
-         deriv(j,4,1,v) = half*(-s3 + s1 ) + s1s3 - one4th;
-         deriv(j,5,1,v) = half*(-s3 - s1 ) - s1s3 - one4th;
-         deriv(j,6,1,v) = half*( s3 + s1 ) + s1s3 + one4th;
-         deriv(j,7,1,v) = half*( s3 - s1 ) - s1s3 + one4th;
+         deriv(j,0,1) = half*( s3 + s1 ) - s1s3 - one4th;
+         deriv(j,1,1) = half*( s3 - s1 ) + s1s3 - one4th;
+         deriv(j,2,1) = half*(-s3 + s1 ) - s1s3 + one4th;
+         deriv(j,3,1) = half*(-s3 - s1 ) + s1s3 + one4th;
+         deriv(j,4,1) = half*(-s3 + s1 ) + s1s3 - one4th;
+         deriv(j,5,1) = half*(-s3 - s1 ) - s1s3 - one4th;
+         deriv(j,6,1) = half*( s3 + s1 ) + s1s3 + one4th;
+         deriv(j,7,1) = half*( s3 - s1 ) - s1s3 + one4th;
 
          // shape function derivative in the s3 direction -
-         deriv(j,0,2,v) = half*( s2 + s1 ) - s1s2 - one4th;
-         deriv(j,1,2,v) = half*( s2 - s1 ) + s1s2 - one4th;
-         deriv(j,2,2,v) = half*(-s2 - s1 ) - s1s2 - one4th;
-         deriv(j,3,2,v) = half*(-s2 + s1 ) + s1s2 - one4th;
-         deriv(j,4,2,v) = half*(-s2 - s1 ) + s1s2 + one4th;
-         deriv(j,5,2,v) = half*(-s2 + s1 ) - s1s2 + one4th;
-         deriv(j,6,2,v) = half*( s2 + s1 ) + s1s2 + one4th;
-         deriv(j,7,2,v) = half*( s2 - s1 ) - s1s2 + one4th;
+         deriv(j,0,2) = half*( s2 + s1 ) - s1s2 - one4th;
+         deriv(j,1,2) = half*( s2 - s1 ) + s1s2 - one4th;
+         deriv(j,2,2) = half*(-s2 - s1 ) - s1s2 - one4th;
+         deriv(j,3,2) = half*(-s2 + s1 ) + s1s2 - one4th;
+         deriv(j,4,2) = half*(-s2 - s1 ) + s1s2 + one4th;
+         deriv(j,5,2) = half*(-s2 + s1 ) - s1s2 + one4th;
+         deriv(j,6,2) = half*( s2 + s1 ) + s1s2 + one4th;
+         deriv(j,7,2) = half*( s2 - s1 ) - s1s2 + one4th;
       }
 }
 
-#pragma omp declare simd
 template<int npe, int nint>
-  __attribute__((vector(processor(core_2nd_gen_avx))))
 void inline
 hex_gradient_operator(
-    const SharedMemView<double*[8][3][vec_width]>& deriv,
-    const SharedMemView<double*[3][vec_width]>& node_coords,
-    SharedMemView<double*[8][3][vec_width]>& gradop,
-    SharedMemView<double*[vec_width]>& detj,
+    const SharedMemView<double*[8][3]>& deriv,
+    const SharedMemView<double*[3]>& node_coords,
+    SharedMemView<double*[8][3]>& gradop,
+    SharedMemView<double*>& detj,
     double & err,
-    int & nerr,
-    int v)
+    int & nerr
+    )
 {
   err = 0.;
   for(int ki=0; ki < nint; ++ki)
@@ -242,22 +232,22 @@ hex_gradient_operator(
     double dz_ds3 = 0.;
     for(int kn=0; kn < npe; ++kn)
     {
-      dx_ds1 += deriv(ki, kn, 0, v) * node_coords(kn, 0, v);
-      dx_ds2 += deriv(ki, kn, 1, v) * node_coords(kn, 0, v);
-      dx_ds3 += deriv(ki, kn, 2, v) * node_coords(kn, 0, v);
+      dx_ds1 += deriv(ki, kn, 0) * node_coords(kn, 0);
+      dx_ds2 += deriv(ki, kn, 1) * node_coords(kn, 0);
+      dx_ds3 += deriv(ki, kn, 2) * node_coords(kn, 0);
 
-      dy_ds1 += deriv(ki, kn, 0, v) * node_coords(kn, 1, v);
-      dy_ds2 += deriv(ki, kn, 1, v) * node_coords(kn, 1, v);
-      dy_ds3 += deriv(ki, kn, 2, v) * node_coords(kn, 1, v);
+      dy_ds1 += deriv(ki, kn, 0) * node_coords(kn, 1);
+      dy_ds2 += deriv(ki, kn, 1) * node_coords(kn, 1);
+      dy_ds3 += deriv(ki, kn, 2) * node_coords(kn, 1);
 
-      dz_ds1 += deriv(ki, kn, 0, v) * node_coords(kn, 2, v);
-      dz_ds2 += deriv(ki, kn, 1, v) * node_coords(kn, 2, v);
-      dz_ds3 += deriv(ki, kn, 2, v) * node_coords(kn, 2, v);
+      dz_ds1 += deriv(ki, kn, 0) * node_coords(kn, 2);
+      dz_ds2 += deriv(ki, kn, 1) * node_coords(kn, 2);
+      dz_ds3 += deriv(ki, kn, 2) * node_coords(kn, 2);
     }
     double denom = dx_ds1*( dy_ds2*dz_ds3 - dz_ds2*dy_ds3 )
          + dy_ds1*( dz_ds2*dx_ds3 - dx_ds2*dz_ds3 )
          + dz_ds1*( dx_ds2*dy_ds3 - dy_ds2*dx_ds3 );
-    detj(ki, v) = denom;
+    detj(ki) = denom;
     if( denom < std::numeric_limits<double>::min() * 1.e6)
     {
       denom = 1.;
@@ -279,20 +269,20 @@ hex_gradient_operator(
 
     for(int kn=0; kn < npe; ++kn)
     {
-      gradop(ki, kn, 0, v) =
-          deriv(ki, kn, 0, v)*ds1_dx
-        + deriv(ki, kn, 1, v)*ds2_dx
-        + deriv(ki, kn, 2, v)*ds3_dx;
+      gradop(ki, kn, 0) =
+          deriv(ki, kn, 0)*ds1_dx
+        + deriv(ki, kn, 1)*ds2_dx
+        + deriv(ki, kn, 2)*ds3_dx;
 
-      gradop(ki, kn, 1, v) =
-          deriv(ki, kn, 0, v)*ds1_dy
-        + deriv(ki, kn, 1, v)*ds2_dy
-        + deriv(ki, kn, 2, v)*ds3_dy;
+      gradop(ki, kn, 1) =
+          deriv(ki, kn, 0)*ds1_dy
+        + deriv(ki, kn, 1)*ds2_dy
+        + deriv(ki, kn, 2)*ds3_dy;
 
-      gradop(ki, kn, 2, v) =
-          deriv(ki, kn, 0, v)*ds1_dz
-        + deriv(ki, kn, 1, v)*ds2_dz
-        + deriv(ki, kn, 2, v)*ds3_dz;
+      gradop(ki, kn, 2) =
+          deriv(ki, kn, 0)*ds1_dz
+        + deriv(ki, kn, 1)*ds2_dz
+        + deriv(ki, kn, 2)*ds3_dz;
     }
   }
   if( err != 0. )

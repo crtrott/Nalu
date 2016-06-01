@@ -11,13 +11,13 @@
 #include <fstream>
 #include <MasterElement.h>
 #include <KokkosInterface.h>
+#include <HexSCS.h>
 
 namespace sierra{
 namespace nalu{
 
 void execute()
 {
-
   HexSCS hexScsME;
   MasterElement * meSCS = &hexScsME;
   const int nDim = 3;
@@ -101,10 +101,10 @@ void execute()
       SharedMemView<double*> rhs_(team.thread_scratch(scratch_level), rhsSize);
       SharedMemView<double*> p_scalarQ(team.thread_scratch(scratch_level), nodesPerElement_);
       SharedMemView<double*> p_diffFluxCoeff(team.thread_scratch(scratch_level), nodesPerElement_);
-      SharedMemView<double*> p_coordinates(team.thread_scratch(scratch_level), nodesPerElement_*nDim_);
-      SharedMemView<double*> p_scs_areav(team.thread_scratch(scratch_level), numScsIp*nDim_);
-      SharedMemView<double*> p_dndx(team.thread_scratch(scratch_level), nDim_*numScsIp*nodesPerElement_);
-      SharedMemView<double*> p_deriv(team.thread_scratch(scratch_level), nDim_*numScsIp*nodesPerElement_);
+      SharedMemView<double*[3]> p_coordinates(team.thread_scratch(scratch_level), nodesPerElement_);
+      SharedMemView<double*[3]> p_scs_areav(team.thread_scratch(scratch_level), numScsIp);
+      SharedMemView<double*[8][3]> p_dndx(team.thread_scratch(scratch_level), numScsIp);
+      SharedMemView<double*[8][3]> p_deriv(team.thread_scratch(scratch_level), numScsIp);
       SharedMemView<double*> p_det_j(team.thread_scratch(scratch_level), numScsIp);
       SharedMemView<int*> localIdsScratch(team.thread_scratch(scratch_level), rhsSize);
 
@@ -138,15 +138,17 @@ void execute()
           // gather vectors
           const int offSet = ni*nDim_;
           for ( int j=0; j < nDim_; ++j ) {
-            p_coordinates[offSet+j] = coords[j];
+            p_coordinates(ni, j) = coords[j];
           }
         }
 
         // compute geometry
         double scs_error = 0.0;
-        meSCS->determinant(1, &p_coordinates[0], &p_scs_areav[0], &scs_error);
+        hex_scs_det<8, 12>(p_coordinates, p_scs_areav);
         // compute dndx
-        meSCS->grad_op(1, &p_coordinates[0], &p_dndx[0], &p_deriv[0], &p_det_j[0], &scs_error);
+        int numGradError;
+        hex_derivative<8, 12>(p_deriv);
+        hex_gradient_operator<8, 12>(p_deriv, p_coordinates, p_dndx, p_det_j, scs_error, numGradError);
 
         // start assembly
         for ( int ip = 0; ip < numScsIp; ++ip ) {
@@ -171,9 +173,8 @@ void execute()
 
             // diffusion
             double lhsfacDiff = 0.0;
-            const int offSetDnDx = nDim_*nodesPerElement_*ip + ic*nDim_;
             for ( int j = 0; j < nDim_; ++j ) {
-              lhsfacDiff += -muIp*p_dndx[offSetDnDx+j]*p_scs_areav[ip*nDim_+j];
+              lhsfacDiff += -muIp*p_dndx(ip, ic, j)*p_scs_areav(ip, j);
             }
 
             qDiff += lhsfacDiff*p_scalarQ[ic];
@@ -208,11 +209,12 @@ void execute()
   double rhsNorm = 0;
   double lhsNorm = 0;
 
+  constexpr double tolerance = 1.e-16;
   for (int i = 0; i < inNumElems; ++i)
   {
     for (int j = 0; j < 8; ++j)
     {
-      if(rhsOut(i, j) != inRhsOut(i, j))
+      if(std::abs(rhsOut(i, j) - inRhsOut(i, j)) > tolerance)
       {
         std::cout << "Error in rhs " << i << ", " << j << std::endl;
       }
@@ -220,7 +222,7 @@ void execute()
     }
     for (int j = 0; j < maxNodesPerElement*maxNodesPerElement; ++j)
     {
-      if(lhsOut(i, j) != inLhsOut(i, j))
+      if(std::abs(lhsOut(i, j) - inLhsOut(i, j)) > tolerance)
       {
         std::cout << "Error in lhs " << i << ", " << j << std::endl;
       }

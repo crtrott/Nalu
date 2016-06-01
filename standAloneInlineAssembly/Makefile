@@ -1,4 +1,4 @@
-KOKKOS_PATH = ../packages/Trilinos/packages/kokkos
+KOKKOS_PATH = /scratch/vebruni/src/Trilinos/packages/kokkos
 SRC = $(wildcard *.C)
 FSRC = $(wildcard *.F)
 
@@ -7,7 +7,7 @@ default: build
 
 ifneq (,$(findstring Cuda,$(KOKKOS_DEVICES)))
 CXX = nvcc_wrapper
-CXXFLAGS = -O3
+CXXFLAGS = -O3 -g
 LINK = ${CXX}
 LINKFLAGS = 
 EXE = $(SRC:.cpp=.cuda)
