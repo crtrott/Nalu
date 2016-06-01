@@ -9,7 +9,6 @@
 // nalu
 #include <iostream>
 #include <fstream>
-#include <MasterElement.h>
 #include <KokkosInterface.h>
 #include <HexSCS.h>
 
@@ -18,8 +17,6 @@ namespace nalu{
 
 void execute()
 {
-  HexSCS hexScsME;
-  MasterElement * meSCS = &hexScsME;
   const int nDim = 3;
 
   const int maxNodesPerElement = 8;
@@ -87,9 +84,9 @@ void execute()
       const unsigned length = inBucketNumElems(ib);
 
       // extract master element
-      const int nDim_ = nDim;
-      const int nodesPerElement_ = meSCS->nodesPerElement_;
-      const int numScsIp = meSCS->numIntPoints_;
+      constexpr int nDim_ = 3;
+      constexpr int nodesPerElement_ = 8;
+      constexpr int numScsIp = 12;
       const int rhsSize = nodesPerElement_;
       const int lhsSize = nodesPerElement_*nodesPerElement_;
 
@@ -109,11 +106,12 @@ void execute()
       SharedMemView<int*> localIdsScratch(team.thread_scratch(scratch_level), rhsSize);
 
       Kokkos::single(Kokkos::PerTeam(team), [&]() {
-        meSCS->shape_fcn(&shape_function_(0, 0));
+        //meSCS->shape_fcn(&shape_function_(0, 0));
+        hex_shape_fcn(shape_function_);
       });
       team.team_barrier();
 
-      auto lrscv = meSCS->adjacentNodes();
+      auto lrscv = hex_scs_adjacent_nodes;
 
       Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
 

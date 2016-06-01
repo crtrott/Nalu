@@ -58,6 +58,20 @@ quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<dou
    {  22, 23, 26, 24},
    {  21, 25, 26, 23}};
 
+static constexpr int hex_scs_adjacent_nodes[24] = {
+  0, 1,
+  1, 2,
+  2, 3,
+  0, 3,
+  4, 5,
+  5, 6,
+  6, 7,
+  4, 7,
+  0, 4,
+  1, 5,
+  2, 6,
+  3, 7
+};
 
 template<int npe, int nscs>
 void inline hex_scs_det(const SharedMemView<double*[3]>& node_coords, const SharedMemView<double*[3]>& area_vec)
@@ -290,6 +304,56 @@ hex_gradient_operator(
     nerr = 0;
   }
 }
+
+static constexpr double intgLoc[12][3] = {
+   { 0.00,  -0.25,  -0.25}, // surf 1    1->2
+   { 0.25,   0.00,  -0.25}, // surf 2    2->3
+   { 0.00,   0.25,  -0.25}, // surf 3    3->4
+   {-0.25,   0.00,  -0.25}, // surf 4    1->4
+   { 0.00,  -0.25,   0.25}, // surf 5    5->6
+   { 0.25,   0.00,   0.25}, // surf 6    6->7
+   { 0.00,   0.25,   0.25}, // surf 7    7->8
+   {-0.25,   0.00,   0.25}, // surf 8    5->8
+   {-0.25,  -0.25,   0.00}, // surf 9    1->5
+   { 0.25,  -0.25,   0.00}, // surf 10   2->6
+   { 0.25,   0.25,   0.00}, // surf 11   3->7
+   {-0.25,   0.25,   0.00} // surf 12   4->8
+};
+
+void hex_shape_fcn(SharedMemView<double**> shape_fcn)
+{
+/*      dimension par_coord(3,npts)
+  dimension shape_fcn(8,npts)*/
+  constexpr int npts = 12;
+
+  const double half = 1.0/2.0;
+  const double one4th = 1.0/4.0;
+  const double one8th = 1.0/8.0;
+
+  for(int j = 0; j < npts; ++j)
+  {
+     const double s1 = intgLoc[j][0];
+     const double s2 = intgLoc[j][1];
+     const double s3 = intgLoc[j][2];
+     shape_fcn(j,0) = one8th + one4th*(-s1 - s2 - s3)
+                   + half*( s2*s3 + s3*s1 + s1*s2 ) - s1*s2*s3;
+     shape_fcn(j,1) = one8th + one4th*( s1 - s2 - s3)
+                   + half*( s2*s3 - s3*s1 - s1*s2 ) + s1*s2*s3;
+     shape_fcn(j,2) = one8th + one4th*( s1 + s2 - s3)
+                   + half*(-s2*s3 - s3*s1 + s1*s2 ) - s1*s2*s3;
+     shape_fcn(j,3) = one8th + one4th*(-s1 + s2 - s3)
+                   + half*(-s2*s3 + s3*s1 - s1*s2 ) + s1*s2*s3;
+     shape_fcn(j,4) = one8th + one4th*(-s1 - s2 + s3)
+                   + half*(-s2*s3 - s3*s1 + s1*s2 ) + s1*s2*s3;
+     shape_fcn(j,5) = one8th + one4th*( s1 - s2 + s3)
+                   + half*(-s2*s3 + s3*s1 - s1*s2 ) - s1*s2*s3;
+     shape_fcn(j,6) = one8th + one4th*( s1 + s2 + s3)
+                   + half*( s2*s3 + s3*s1 + s1*s2 ) + s1*s2*s3;
+     shape_fcn(j,7) = one8th + one4th*(-s1 + s2 + s3)
+                   + half*( s2*s3 - s3*s1 - s1*s2 ) - s1*s2*s3;
+  }
+}
+
 }
 }
 
