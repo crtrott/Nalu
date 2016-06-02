@@ -36,6 +36,8 @@ void execute()
   inFile.read( (char *) & inNumElems, sizeof(unsigned));
   inFile.read( (char *) & inTotalNodes, sizeof(unsigned));
   inFile.read( (char *) & inNumBuckets, sizeof(unsigned));
+
+  std::cout << "NumElems: " << inNumElems << std::endl;
   //
   Kokkos::View<unsigned **> inConnectivity("inConnectivity", inNumElems, 8);
   Kokkos::View<unsigned *> inBucketNumElems("inBucketNumElems", inNumBuckets);
@@ -208,19 +210,21 @@ void execute()
   double rhsNorm = 0;
   double lhsNorm = 0;
 
+  constexpr double tolerance = 1.e-16;
+
   for (int i = 0; i < inNumElems; ++i)
   {
     for (int j = 0; j < 8; ++j)
     {
-      if(rhsOut(i, j) != inRhsOut(i, j))
+      if(std::abs(rhsOut(i, j) - inRhsOut(i, j)) > tolerance)
       {
-        std::cout << "Error in rhs " << i << ", " << j << std::endl;
+        std::cout << "Error in rhs " << i << ", " << j << " " << rhsOut(i,j) << " " << inRhsOut(i,j) <<std::endl;
       }
       rhsNorm += rhsOut(i,j)*rhsOut(i,j);
     }
     for (int j = 0; j < maxNodesPerElement*maxNodesPerElement; ++j)
     {
-      if(lhsOut(i, j) != inLhsOut(i, j))
+      if(std::abs(lhsOut(i, j) - inLhsOut(i, j)) > tolerance)
       {
         std::cout << "Error in lhs " << i << ", " << j << std::endl;
       }
