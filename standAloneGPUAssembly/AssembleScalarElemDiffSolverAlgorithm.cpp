@@ -37,14 +37,14 @@ void execute()
   inFile.read( (char *) & inTotalNodes, sizeof(unsigned));
   inFile.read( (char *) & inNumBuckets, sizeof(unsigned));
   //
-  Kokkos::View<unsigned **> inConnectivity("inConnectivity", inNumElems, 8);
+  Kokkos::View<unsigned **,Kokkos::LayoutRight> inConnectivity("inConnectivity", inNumElems, 8);
   Kokkos::View<unsigned *> inBucketNumElems("inBucketNumElems", inNumBuckets);
-  Kokkos::View<unsigned **> inBucketElemLocalIds("inBucketElemLocalIds", inNumBuckets, 512);
-  Kokkos::View<double **> inCoords("inCoords", inTotalNodes, nDim);
+  Kokkos::View<unsigned **,Kokkos::LayoutRight> inBucketElemLocalIds("inBucketElemLocalIds", inNumBuckets, 512);
+  Kokkos::View<double **,Kokkos::LayoutRight> inCoords("inCoords", inTotalNodes, nDim);
   Kokkos::View<double *> inScalarQ("inScalarQ", inTotalNodes);
   Kokkos::View<double *> inDiffFluxCoeff("inDiffFluxCoeff", inTotalNodes);
-  Kokkos::View<double **> inLhsOut("inLhsOut", inNumElems, maxNodesPerElement*maxNodesPerElement);
-  Kokkos::View<double **> inRhsOut("inRhsOut", inNumElems, maxNodesPerElement);
+  Kokkos::View<double **,Kokkos::LayoutRight> inLhsOut("inLhsOut", inNumElems, maxNodesPerElement*maxNodesPerElement);
+  Kokkos::View<double **,Kokkos::LayoutRight> inRhsOut("inRhsOut", inNumElems, maxNodesPerElement);
 
 
   inFile.read( (char *) inBucketNumElems.ptr_on_device(), inBucketNumElems.capacity() * sizeof(unsigned));
@@ -79,28 +79,48 @@ void execute()
       SharedMemView<double *>::shmem_size(maxrhsSize) +
       SharedMemView<int *>::shmem_size(maxrhsSize); // For TpetraLinearSystem::sumInto vector of localIds
 
-  auto team_exec = get_team_policy(inNumBuckets, bytes_per_team, bytes_per_thread);
+  //auto team_exec = get_team_policy(inNumBuckets, bytes_per_team, bytes_per_thread);
+  auto team_exec = get_team_policy(inNumBuckets, 1024, 0);
 
-  Kokkos::View<double**,Kokkos::LayoutRight> scratch_view("ScratchView",16*16,(bytes_per_team+512*bytes_per_thread)/8);
-  Kokkos::View<int*> lock_array("ScratchLockArray",16*16);
+  Kokkos::View<double**,Kokkos::LayoutRight> scratch_view("ScratchView",64*16,(bytes_per_team+512*bytes_per_thread)/8);
+  Kokkos::View<int*> lock_array("ScratchLockArray",64*16);
+
+  Kokkos::parallel_for(1,KOKKOS_LAMBDA (const int&) {});
 
   std::cout<< "SharedMemory: " << bytes_per_team << " " << bytes_per_thread << " " << scratch_view.dimension_1()<<std::endl;
   Kokkos::parallel_for("Nalu::AssembleScalarElemDiffSolverAlgorithm::execute",
-      team_exec, [&] (const DeviceTeam & team) {
+      team_exec, KOKKOS_LAMBDA (const DeviceTeam & team) {
 
       const int ib = team.league_rank();
       const unsigned length = inBucketNumElems(ib);
 
       int my_scratch_index = -1;
-
-      Kokkos::single(Kokkos::PerTeam(team), [&] (int& idx) {
+ 
+      
+      /*Kokkos::single(Kokkos::PerTeam(team), [&] (int& idx) {
         idx = team.league_rank()%(16*16);
         while(!Kokkos::atomic_compare_exchange_strong(&lock_array(idx),0,1)) {
           idx++;
           if(idx==16*16) idx = 0;
         }
-      },my_scratch_index);
-
+      },my_scratch_index);*/
+      
+      int idx = -1;
+      SharedMemView<int> index(team.team_scratch(1));
+      if(team.team_rank()==0) {
+                idx = team.league_rank()%(64*16);
+        while(!Kokkos::atomic_compare_exchange_strong(&lock_array(idx),0,1)) {
+          idx++;
+          if(idx==64*16) idx = 0;
+        }
+        index() = idx;
+      }
+      team.team_barrier();
+      my_scratch_index = index();
+      //team.team_broadcast(my_scratch_index,0);
+      //printf("Team: %i Rank %i HdwId: %i ScratchIndex: %i\n",team.league_rank(),team.team_rank(),Kokkos::OpenMP::hardware_thread_id(),my_scratch_index);
+      //team.team_barrier();
+ 
       // extract master element
       constexpr int nDim_ = 3;
       constexpr int nodesPerElement_ = 8;
@@ -120,6 +140,7 @@ void execute()
       int off_increment = lhsSize;
       SharedMemView<double*> lhs_((double*)&my_scratch(offset + team.team_rank()*off_increment),lhsSize);
       offset += off_increment*team.team_size();
+      //printf("Team: %i Rank %i ScratchIndex: %i Pointer %p %p\n",team.league_rank(),team.team_rank(),my_scratch_index,shape_function_.data(),lhs_.data());
 
       off_increment = rhsSize;
       SharedMemView<double*> rhs_((double*)&my_scratch(offset + team.team_rank()*off_increment),rhsSize);
@@ -153,19 +174,33 @@ void execute()
       SharedMemView<double*> p_det_j((double*)&my_scratch(offset + team.team_rank()*off_increment),numScsIp);
       offset += off_increment*team.team_size();
 
-      off_increment = numScsIp/2;
-      SharedMemView<int*> localIdsScratch((int*)&my_scratch(offset + team.team_rank()*off_increment),numScsIp);
+      off_increment = rhsSize/2;
+      SharedMemView<int*> localIdsScratch((int*)&my_scratch(offset + team.team_rank()*off_increment),rhsSize);
       offset += off_increment*team.team_size();
-
+      
       Kokkos::single(Kokkos::PerTeam(team), [&]() {
         //meSCS->shape_fcn(&shape_function_(0, 0));
         hex_shape_fcn(shape_function_);
       });
       team.team_barrier();
+static constexpr int lrscv[24] = {
+  0, 1,
+  1, 2,
+  2, 3,
+  0, 3,
+  4, 5,
+  5, 6,
+  6, 7,
+  4, 7,
+  0, 4,
+  1, 5,
+  2, 6,
+  3, 7
+};
 
-      auto lrscv = hex_scs_adjacent_nodes;
+      //auto lrscv = hex_scs_adjacent_nodes;
 
-      Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const size_t k) {
+      Kokkos::parallel_for(Kokkos::TeamThreadRange(team, length), [&] (const int k) {
 
         // zero lhs/rhs
         for ( int p = 0; p < lhsSize; ++p )
@@ -259,6 +294,7 @@ void execute()
       Kokkos::single(Kokkos::PerTeam(team), [&] () {
         Kokkos::atomic_exchange(&lock_array(my_scratch_index),0);
       });
+      team.team_barrier();
     });
 
   double rhsNorm = 0;
@@ -271,7 +307,7 @@ void execute()
     {
       if(std::abs(rhsOut(i, j) - inRhsOut(i, j)) > tolerance)
       {
-        std::cout << "Error in rhs " << i << ", " << j << std::endl;
+        std::cout << "Error in rhs " << i << ", " << j << " Result: " << rhsOut(i,j) << " " << inRhsOut(i,j) << std::endl;
       }
       rhsNorm += rhsOut(i,j)*rhsOut(i,j);
     }

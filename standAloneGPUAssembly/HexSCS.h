@@ -1,21 +1,22 @@
 namespace sierra {
 namespace nalu {
 
-  static constexpr int triangularFacetTable[4][3] = {
-    {4, 0, 1},
-    {4, 1, 2},
-    {4, 2, 3},
-    {4, 3, 0}};
-
-void inline
-quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<double*[3]>& area, const int ics)
-{
-  /*constexpr int triangularFacetTable[4][3] = {
+ /* static constexpr int triangularFacetTable[4][3] = {
     {4, 0, 1},
     {4, 1, 2},
     {4, 2, 3},
     {4, 3, 0}};
 */
+KOKKOS_INLINE_FUNCTION
+void 
+quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<double*[3]>& area, const int ics)
+{
+  constexpr int triangularFacetTable[4][3] = {
+    {4, 0, 1},
+    {4, 1, 2},
+    {4, 2, 3},
+    {4, 3, 0}};
+
   double xmid[3];
   double r2[3];
   for(int k=0; k < 3; ++k)
@@ -44,7 +45,7 @@ quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<dou
   }
 }
 
-  static constexpr int hex_edge_facet_table[12][4] = {
+/*  static constexpr int hex_edge_facet_table[12][4] = {
    {   20, 8, 12, 26},
    {  24,  9, 12, 26},
    {  10, 12, 26, 23},
@@ -72,13 +73,14 @@ static constexpr int hex_scs_adjacent_nodes[24] = {
   2, 6,
   3, 7
 };
-
+*/
 template<int npe, int nscs>
-void inline hex_scs_det(const SharedMemView<double*[3]>& node_coords, const SharedMemView<double*[3]>& area_vec)
+KOKKOS_INLINE_FUNCTION
+void hex_scs_det(const SharedMemView<double*[3]>& node_coords, const SharedMemView<double*[3]>& area_vec)
 {
   double coords[27][3];
   double scscoords[4][3];
-  /*constexpr int hex_edge_facet_table[12][4] = {
+  constexpr int hex_edge_facet_table[12][4] = {
    {   20, 8, 12, 26},
    {  24,  9, 12, 26},
    {  10, 12, 26, 23},
@@ -91,7 +93,7 @@ void inline hex_scs_det(const SharedMemView<double*[3]>& node_coords, const Shar
    {  20, 18, 24, 26},
    {  22, 23, 26, 24},
    {  21, 25, 26, 23}};
-*/
+
   for(int i=0; i < 8; ++i)
   {
     for(int j=0; j < 3; ++j)
@@ -158,7 +160,8 @@ void inline hex_scs_det(const SharedMemView<double*[3]>& node_coords, const Shar
 
 
 template<int npe, int nint>
-void inline
+KOKKOS_INLINE_FUNCTION
+void
 hex_derivative(
     SharedMemView<double*[8][3]>& deriv
     )
@@ -222,7 +225,8 @@ hex_derivative(
 }
 
 template<int npe, int nint>
-void inline
+KOKKOS_INLINE_FUNCTION
+void
 hex_gradient_operator(
     const SharedMemView<double*[8][3]>& deriv,
     const SharedMemView<double*[3]>& node_coords,
@@ -305,6 +309,33 @@ hex_gradient_operator(
   }
 }
 
+/*
+static constexpr double intgLoc[12][3] = {
+   { 0.00,  -0.25,  -0.25}, // surf 1    1->2
+   { 0.25,   0.00,  -0.25}, // surf 2    2->3
+   { 0.00,   0.25,  -0.25}, // surf 3    3->4
+   {-0.25,   0.00,  -0.25}, // surf 4    1->4
+   { 0.00,  -0.25,   0.25}, // surf 5    5->6
+   { 0.25,   0.00,   0.25}, // surf 6    6->7
+   { 0.00,   0.25,   0.25}, // surf 7    7->8
+   {-0.25,   0.00,   0.25}, // surf 8    5->8
+   {-0.25,  -0.25,   0.00}, // surf 9    1->5
+   { 0.25,  -0.25,   0.00}, // surf 10   2->6
+   { 0.25,   0.25,   0.00}, // surf 11   3->7
+   {-0.25,   0.25,   0.00} // surf 12   4->8
+};*/
+
+KOKKOS_INLINE_FUNCTION
+void hex_shape_fcn(SharedMemView<double**> shape_fcn)
+{
+/*      dimension par_coord(3,npts)
+  dimension shape_fcn(8,npts)*/
+  constexpr int npts = 12;
+
+  const double half = 1.0/2.0;
+  const double one4th = 1.0/4.0;
+  const double one8th = 1.0/8.0;
+
 static constexpr double intgLoc[12][3] = {
    { 0.00,  -0.25,  -0.25}, // surf 1    1->2
    { 0.25,   0.00,  -0.25}, // surf 2    2->3
@@ -319,16 +350,6 @@ static constexpr double intgLoc[12][3] = {
    { 0.25,   0.25,   0.00}, // surf 11   3->7
    {-0.25,   0.25,   0.00} // surf 12   4->8
 };
-
-void hex_shape_fcn(SharedMemView<double**> shape_fcn)
-{
-/*      dimension par_coord(3,npts)
-  dimension shape_fcn(8,npts)*/
-  constexpr int npts = 12;
-
-  const double half = 1.0/2.0;
-  const double one4th = 1.0/4.0;
-  const double one8th = 1.0/8.0;
 
   for(int j = 0; j < npts; ++j)
   {
