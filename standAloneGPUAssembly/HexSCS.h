@@ -7,9 +7,11 @@ namespace nalu {
     {4, 2, 3},
     {4, 3, 0}};
 */
+
+template <class ViewType>
 KOKKOS_INLINE_FUNCTION
 void 
-quadAreaByTriangleFacets(const double  areacoords[4][3], const SharedMemView<double*[3]>& area, const int ics)
+quadAreaByTriangleFacets(const double  areacoords[4][3], const ViewType & area, const int ics)
 {
   constexpr int triangularFacetTable[4][3] = {
     {4, 0, 1},
@@ -74,9 +76,9 @@ static constexpr int hex_scs_adjacent_nodes[24] = {
   3, 7
 };
 */
-template<int npe, int nscs>
+template<int npe, int nscs, class ViewType>
 KOKKOS_INLINE_FUNCTION
-void hex_scs_det(const SharedMemView<double*[3]>& node_coords, const SharedMemView<double*[3]>& area_vec)
+void hex_scs_det(const ViewType & node_coords, const ViewType & area_vec)
 {
   double coords[27][3];
   double scscoords[4][3];
@@ -159,11 +161,11 @@ void hex_scs_det(const SharedMemView<double*[3]>& node_coords, const SharedMemVi
 }
 
 
-template<int npe, int nint>
+template<int npe, int nint, class ViewType>
 KOKKOS_INLINE_FUNCTION
 void
 hex_derivative(
-    SharedMemView<double*[8][3]>& deriv
+    ViewType & deriv
     )
 {
       double half, one4th;
@@ -224,14 +226,14 @@ hex_derivative(
       }
 }
 
-template<int npe, int nint>
+template<int npe, int nint, class ViewType1, class ViewType2, class ViewType3>
 KOKKOS_INLINE_FUNCTION
 void
 hex_gradient_operator(
-    const SharedMemView<double*[8][3]>& deriv,
-    const SharedMemView<double*[3]>& node_coords,
-    SharedMemView<double*[8][3]>& gradop,
-    SharedMemView<double*>& detj,
+    const ViewType1& deriv,
+    const ViewType2& node_coords,
+    ViewType1& gradop,
+    ViewType3& detj,
     double & err,
     int & nerr
     )
@@ -325,8 +327,9 @@ static constexpr double intgLoc[12][3] = {
    {-0.25,   0.25,   0.00} // surf 12   4->8
 };*/
 
+template <class ViewType>
 KOKKOS_INLINE_FUNCTION
-void hex_shape_fcn(SharedMemView<double**> shape_fcn)
+void hex_shape_fcn(ViewType shape_fcn)
 {
 /*      dimension par_coord(3,npts)
   dimension shape_fcn(8,npts)*/
@@ -336,7 +339,7 @@ void hex_shape_fcn(SharedMemView<double**> shape_fcn)
   const double one4th = 1.0/4.0;
   const double one8th = 1.0/8.0;
 
-static constexpr double intgLoc[12][3] = {
+constexpr double intgLoc[12][3] = {
    { 0.00,  -0.25,  -0.25}, // surf 1    1->2
    { 0.25,   0.00,  -0.25}, // surf 2    2->3
    { 0.00,   0.25,  -0.25}, // surf 3    3->4

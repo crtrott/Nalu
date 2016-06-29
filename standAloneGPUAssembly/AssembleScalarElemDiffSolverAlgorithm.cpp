@@ -15,8 +15,8 @@
 namespace sierra{
 namespace nalu{
 
-template<class D>
-using SharedMemViewS = Kokkos::View<D,Kokkos::LayoutRight,Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
+template <typename T>
+using AllTeamThreadsView = Kokkos::View<T, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 
 void execute()
 {
@@ -85,8 +85,6 @@ void execute()
   Kokkos::View<double**,Kokkos::LayoutRight> scratch_view("ScratchView",64*16,(bytes_per_team+512*bytes_per_thread)/8);
   Kokkos::View<int*> lock_array("ScratchLockArray",64*16);
 
-  Kokkos::parallel_for(1,KOKKOS_LAMBDA (const int&) {});
-
   std::cout<< "SharedMemory: " << bytes_per_team << " " << bytes_per_thread << " " << scratch_view.dimension_1()<<std::endl;
   Kokkos::parallel_for("Nalu::AssembleScalarElemDiffSolverAlgorithm::execute",
       team_exec, KOKKOS_LAMBDA (const DeviceTeam & team) {
@@ -129,7 +127,7 @@ void execute()
       const int lhsSize = nodesPerElement_*nodesPerElement_;
 
 
-      Kokkos::View<double*,Kokkos::LayoutRight,Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+      /*Kokkos::View<double*,Kokkos::LayoutRight,Kokkos::MemoryTraits<Kokkos::Unmanaged>>
         my_scratch(scratch_view,my_scratch_index,Kokkos::ALL());
       int offset = 0;
 
@@ -176,14 +174,72 @@ void execute()
 
       off_increment = rhsSize/2;
       SharedMemView<int*> localIdsScratch((int*)&my_scratch(offset + team.team_rank()*off_increment),rhsSize);
+      offset += off_increment*team.team_size();*/
+
+
+      int offset = 0;
+      const int team_size = team.team_size();
+      SharedMemView<double **> shape_function_((double*)&scratch_view(my_scratch_index, offset), numScsIp, nodesPerElement_);
+      offset += numScsIp*nodesPerElement_;
+
+      // These are the per-thread handles. Better interface being worked on by Kokkos.
+      int off_increment = lhsSize;
+      AllTeamThreadsView<double**> lhs_all((double*)&scratch_view(my_scratch_index, offset), team_size, lhsSize);
+      auto lhs_ = Kokkos::subview(lhs_all, team.team_rank(), Kokkos::ALL);
       offset += off_increment*team.team_size();
-      
+      //printf("Team: %i Rank %i ScratchIndex: %i Pointer %p %p\n",team.league_rank(),team.team_rank(),my_scratch_index,shape_function_.data(),lhs_.data());
+
+      off_increment = rhsSize;
+      AllTeamThreadsView<double**> rhs_all((double*)&scratch_view(my_scratch_index, offset), team_size, rhsSize);
+      auto rhs_ = Kokkos::subview(rhs_all, team.team_rank(), Kokkos::ALL);
+      offset += off_increment*team.team_size();
+
+      off_increment = nodesPerElement_;
+      AllTeamThreadsView<double**> p_scalarQall((double*)&scratch_view(my_scratch_index, offset), team_size, nodesPerElement_);
+      auto p_scalarQ = Kokkos::subview(p_scalarQall, team.team_rank(), Kokkos::ALL);
+      offset += off_increment*team.team_size();
+
+      off_increment = nodesPerElement_;
+      AllTeamThreadsView<double**> p_diffFluxCoeffall((double*)&scratch_view(my_scratch_index, offset), team_size, nodesPerElement_);
+      auto p_diffFluxCoeff = Kokkos::subview(p_diffFluxCoeffall, team.team_rank(), Kokkos::ALL);
+      offset += off_increment*team.team_size();
+
+      off_increment = nodesPerElement_*3;
+      AllTeamThreadsView<double**[3]> p_coordinatesall((double*)&scratch_view(my_scratch_index, offset), team_size, nodesPerElement_);
+      auto p_coordinates = Kokkos::subview(p_coordinatesall, team.team_rank(), Kokkos::ALL, Kokkos::ALL);
+      offset += off_increment*team.team_size();
+
+      off_increment = numScsIp*3;
+      AllTeamThreadsView<double**[3]> p_scs_areavall((double*)&scratch_view(my_scratch_index, offset), team_size, numScsIp);
+      auto p_scs_areav = Kokkos::subview(p_scs_areavall, team.team_rank(), Kokkos::ALL, Kokkos::ALL);
+      offset += off_increment*team.team_size();
+
+      off_increment = numScsIp*8*3;
+      AllTeamThreadsView<double**[8][3]> p_dndxall((double*)&scratch_view(my_scratch_index, offset), team_size, numScsIp);
+      auto p_dndx = Kokkos::subview(p_dndxall, team.team_rank(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
+      offset += off_increment*team.team_size();
+
+      off_increment = numScsIp*8*3;
+      AllTeamThreadsView<double**[8][3]> p_derivall((double*)&scratch_view(my_scratch_index, offset), team_size, numScsIp);
+      auto p_deriv = Kokkos::subview(p_derivall, team.team_rank(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL);
+      offset += off_increment*team.team_size();
+
+      off_increment = numScsIp;
+      AllTeamThreadsView<double**> p_det_jall((double*)&scratch_view(my_scratch_index, offset), team_size, numScsIp);
+      auto p_det_j = Kokkos::subview(p_det_jall, team.team_rank(), Kokkos::ALL);
+      offset += off_increment*team.team_size();
+
+      off_increment = rhsSize/2;
+      AllTeamThreadsView<int**> localIdsScratchall((int*)&scratch_view(my_scratch_index, offset), team_size, rhsSize);
+      auto localIdsScratch = Kokkos::subview(localIdsScratchall, team.team_rank(), Kokkos::ALL);
+      offset += off_increment*team.team_size();
+
       Kokkos::single(Kokkos::PerTeam(team), [&]() {
         //meSCS->shape_fcn(&shape_function_(0, 0));
         hex_shape_fcn(shape_function_);
       });
       team.team_barrier();
-static constexpr int lrscv[24] = {
+constexpr int lrscv[24] = {
   0, 1,
   1, 2,
   2, 3,
